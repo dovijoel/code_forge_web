@@ -10,8 +10,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter  
-  flutter_highlight: ^0.7.0
-  highlight: ^0.7.0
+  http: ^1.6.0
+  meta: ^1.17.0
+  re_highlight: ^0.0.3
+  web_socket_channel: ^3.0.3
 
 dev_dependencies:
   flutter_test:

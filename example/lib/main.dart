@@ -3,6 +3,7 @@ import 'package:example/big_code.dart';
 import 'package:example/little_code.dart';
 import 'package:example/small_code.dart';
 import 'package:flutter/material.dart';
+import 'package:re_highlight/languages/dart.dart';
 
 void main() {
   runApp(const MyApp());
@@ -20,7 +21,7 @@ class _MyAppState extends State<MyApp> {
 
   @override
   void initState(){
-    _controller.text = big_code;
+    _controller.text = little_code;
     super.initState();
   }
 
@@ -29,17 +30,14 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       home: SafeArea(
         child: CodeForge(
+          language: langDart,
           controller: _controller,
-          enableFolding: true,
-          enableGuideLines: true,
-          enableGutter: true,
-          backgroundColor: const Color(0xFF1E1E1E),
-          textStyle: const TextStyle(
+          /* textStyle: const TextStyle(
             fontFamily: 'monospace',
             fontSize: 14,
             color: Color(0xFFD4D4D4),
-          ),
-          gutterStyle: const GutterStyle(
+          ), */
+          gutterStyle: GutterStyle(
             backgroundColor: Color(0xFF252526),
             lineNumberStyle: TextStyle(
               color: Color(0xFF858585),

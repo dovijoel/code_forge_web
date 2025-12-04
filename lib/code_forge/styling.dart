@@ -1,70 +1,121 @@
-import 'package:flutter/material.dart' show Icons, IconData, TextStyle, Color;
+import 'package:flutter/material.dart';
 
-/// Style configuration for the code selection
-class CodeSelectionStyle {
-  final Color selectionColor;
+/// This class provides styling options for code selection in the code editor.
+class CodeSelectionStyle{
+  /// The color of the cursor line, defaults to the highlight theme text color.
   final Color? cursorColor;
+
+  /// The color used to highlight selected text in the code editor.
+  final Color selectionColor;
+
+  /// The color of the cursor bubble that appears when selecting text.
   final Color cursorBubbleColor;
 
-  const CodeSelectionStyle({
-    this.selectionColor = const Color(0x40448AFF),
+  CodeSelectionStyle({
     this.cursorColor,
-    this.cursorBubbleColor = const Color(0xFF448AFF),
+    this.selectionColor = const Color(0x6E2195F3),
+    this.cursorBubbleColor = Colors.blue
   });
 }
 
-/// Style configuration for the gutter (line numbers area)
+/// This class provides styling options for the Gutter.
 class GutterStyle {
-  final double? gutterWidth;
+  /// The style for line numbers in the gutter. Expected to be a [TextStyle].
   final TextStyle? lineNumberStyle;
+
+  /// The background color of the gutter bar.
   final Color? backgroundColor;
+
+  /// The color for the folded line folding indicator icon in the gutter. Defaults to [Colors.grey].
   final Color? foldedIconColor;
+
+  /// The color for the unfolded line folding indicator icon in the gutter. Defaults to [Colors.grey].
   final Color? unfoldedIconColor;
-  final IconData foldedIcon;
+
+  /// The width of the gutter. Dynamic by default, which means it can adapt best width based on line number. So recommended to leave it null.
+  final double? gutterWidth;
+
+  /// The size of the folding icon in the gutter. Defaults to (widget?.textStyle?.fontSize ?? 14) * 1.2.
+  ///
+  /// /// Recommended to leave it null, because the default value is dynamic based on editor fontSize.
+  final double? foldingIconSize;
+
+  /// The icon used for the folded line folding indicator in the gutter.
+  ///
+  /// Defaults to [Icons.chevron_right_outlined] for folded lines.
   final IconData unfoldedIcon;
 
-  const GutterStyle({
-    this.gutterWidth,
+  /// The icon used for the unfolded line folding indicator in the gutter.
+  ///
+  /// Defaults to [Icons.keyboard_arrow_down_outlined] for unfolded lines.
+  final IconData foldedIcon;
+  GutterStyle({
     this.lineNumberStyle,
     this.backgroundColor,
+    this.gutterWidth,
+    this.foldedIcon = Icons.chevron_right_outlined,
+    this.unfoldedIcon = Icons.keyboard_arrow_down_outlined,
+    this.foldingIconSize,
     this.foldedIconColor,
     this.unfoldedIconColor,
-    this.foldedIcon = Icons.chevron_right,
-    this.unfoldedIcon = Icons.expand_more,
   });
 }
 
-/// Represents a foldable code region
-class FoldRange {
-  final int startIndex;
-  final int endIndex;
-  bool isFolded = false;
-  List<FoldRange> originallyFoldedChildren = [];
+sealed class OverlayStyle {
+  /// The elevation of the overlay, which determines the shadow depth.
+  /// Defaults to 6.
+  final double elevation;
 
-  FoldRange(this.startIndex, this.endIndex);
+  /// The background color of the overlay.
+  final Color backgroundColor;
 
-  void addOriginallyFoldedChild(FoldRange child) {
-    if (!originallyFoldedChildren.contains(child)) {
-      originallyFoldedChildren.add(child);
-    }
-  }
+  /// The color used when the overlay is focused.
+  final Color focusColor;
 
-  void clearOriginallyFoldedChildren() {
-    originallyFoldedChildren.clear();
-  }
+  /// The color used when the overlay is hovered.
+  final Color hoverColor;
 
-  bool containsLine(int line) {
-    return line > startIndex && line <= endIndex;
-  }
-  
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    return other is FoldRange && 
-           other.startIndex == startIndex && 
-           other.endIndex == endIndex;
-  }
-  
-  @override
-  int get hashCode => startIndex.hashCode ^ endIndex.hashCode;
+  /// The color used for the splash effect when the overlay is tapped.
+  final Color splashColor;
+
+  /// The shape of the overlay, which defines its border and corner radius.
+  /// This can be a [ShapeBorder] such as [RoundedRectangleBorder], [CircleBorder], etc.
+  final ShapeBorder shape;
+
+  /// The text style used for the text in the overlay.
+  /// This is typically a [TextStyle] that defines the font size, weight, color, etc.
+  final TextStyle textStyle;
+  OverlayStyle({
+    this.elevation = 6,
+    required this.shape,
+    required this.backgroundColor,
+    required this.focusColor,
+    required this.hoverColor,
+    required this.splashColor,
+    required this.textStyle,
+  });
+}
+
+class SuggestionStyle extends OverlayStyle {
+  SuggestionStyle({
+    super.elevation,
+    required super.shape,
+    required super.backgroundColor,
+    required super.focusColor,
+    required super.hoverColor,
+    required super.splashColor,
+    required super.textStyle,
+  });
+}
+
+class HoverDetailsStyle extends OverlayStyle {
+  HoverDetailsStyle({
+    super.elevation,
+    required super.shape,
+    required super.backgroundColor,
+    required super.focusColor,
+    required super.hoverColor,
+    required super.splashColor,
+    required super.textStyle,
+  });
 }

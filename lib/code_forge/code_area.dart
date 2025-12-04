@@ -1,11 +1,15 @@
 import 'dart:ui' as ui;
 
+import '../AI_completion/ai.dart';
+import '../LSP/lsp.dart';
 import 'controller.dart';
 import 'scroll.dart';
 import 'styling.dart';
+import 'syntax_highlighter.dart';
 
-//TODO: Don't blink on typing
-
+import 'package:re_highlight/re_highlight.dart';
+import 'package:re_highlight/styles/vs2015.dart';
+import 'package:re_highlight/languages/python.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -13,46 +17,77 @@ import 'package:flutter/services.dart';
 
 class CodeForge extends StatefulWidget {
   final CodeForgeController? controller;
+  final Map<String, TextStyle>? editorTheme;
+  final Mode? language;
+  final FocusNode? focusNode;
+  final TextStyle? textStyle;
+  final AiCompletion? aiCompletion;
+  final LspConfig? lspConfig;
   final EdgeInsets? innerPadding;
   final ScrollController? verticalScrollController;
   final ScrollController? horizontalScrollController;
-  final FocusNode? focusNode;
+  final UndoHistoryController? undoHistoryController;
+  final CodeSelectionStyle? selectionStyle;
+  final GutterStyle? gutterStyle;
+  final SuggestionStyle? suggestionStyle;
+  final HoverDetailsStyle? hoverDetailsStyle;
+  final String? filePath;
+  final String? initialText;
   final bool readOnly;
-  final TextStyle? textStyle;
+  final bool lineWrap;
+  final bool autoFocus;
   final bool enableFolding;
   final bool enableGuideLines;
   final bool enableGutter;
-  final GutterStyle? gutterStyle;
-  final CodeSelectionStyle? selectionStyle;
-  final Color? backgroundColor;
+  final bool enableGutterDivider;
+  final bool enableSuggestions;
 
   const CodeForge({
     super.key,
     this.controller,
-    this.innerPadding,
+    this.editorTheme,
+    this.language,
+    this.aiCompletion,
+    this.lspConfig,
+    this.filePath,
+    this.initialText,
+    this.focusNode,
     this.verticalScrollController,
     this.horizontalScrollController,
-    this.focusNode,
-    this.readOnly = false,
+    this.undoHistoryController,
     this.textStyle,
+    this.innerPadding,
+    this.readOnly = false,
+    this.autoFocus = false,
+    this.lineWrap = false,
     this.enableFolding = true,
     this.enableGuideLines = true,
+    this.enableSuggestions = true,
     this.enableGutter = true,
-    this.gutterStyle,
+    this.enableGutterDivider = false,
     this.selectionStyle,
-    this.backgroundColor,
+    this.gutterStyle,
+    this.suggestionStyle,
+    this.hoverDetailsStyle,
   });
 
   @override
   State<CodeForge> createState() => _CodeForgeState();
 }
 
-class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMixin {
+class _CodeForgeState extends State<CodeForge>
+    with SingleTickerProviderStateMixin {
   late final ScrollController _hscrollController, _vscrollController;
   late final CodeForgeController _controller;
-  TextInputConnection? _connection;
   late final FocusNode _focusNode;
   late final AnimationController _caretBlinkController;
+  late final Map<String, TextStyle> _editorTheme;
+  late final Mode _language;
+  late final CodeSelectionStyle _selectionStyle;
+  late final GutterStyle _gutterStyle;
+  late final SuggestionStyle _suggestionStyle;
+  late final HoverDetailsStyle _hoverDetailsStyle;
+  TextInputConnection? _connection;
 
   @override
   void initState() {
@@ -60,8 +95,65 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
 
     _controller = widget.controller ?? CodeForgeController();
     _focusNode = widget.focusNode ?? FocusNode();
-    _hscrollController = widget.horizontalScrollController ?? ScrollController();
+    _hscrollController =
+        widget.horizontalScrollController ?? ScrollController();
     _vscrollController = widget.verticalScrollController ?? ScrollController();
+    _editorTheme = widget.editorTheme ?? vs2015Theme;
+    _language = widget.language ?? langPython;
+
+    _selectionStyle = widget.selectionStyle ?? CodeSelectionStyle();
+    _gutterStyle =
+        widget.gutterStyle ??
+        GutterStyle(
+          lineNumberStyle: widget.textStyle ?? _editorTheme['root'],
+          foldedIconColor: _editorTheme['root']?.color,
+          unfoldedIconColor: _editorTheme['root']?.color,
+          backgroundColor: _editorTheme['root']?.backgroundColor,
+        );
+    _suggestionStyle =
+        widget.suggestionStyle ??
+        SuggestionStyle(
+          elevation: 6,
+          textStyle: (() {
+            TextStyle style = widget.textStyle ?? _editorTheme['root']!;
+            if (style.color == null) {
+              style = style.copyWith(color: _editorTheme['root']!.color);
+            }
+            return style;
+          })(),
+          backgroundColor: _editorTheme['root']!.backgroundColor!,
+          focusColor: Colors.blueAccent.withAlpha(50),
+          hoverColor: Colors.grey.withAlpha(15),
+          splashColor: Colors.blueAccent.withAlpha(50),
+          shape: BeveledRectangleBorder(
+            side: BorderSide(
+              color: _editorTheme['root']!.color ?? Colors.grey[400]!,
+              width: 0.2,
+            ),
+          ),
+        );
+
+    _hoverDetailsStyle =
+        widget.hoverDetailsStyle ??
+        HoverDetailsStyle(
+          shape: BeveledRectangleBorder(
+            side: BorderSide(
+              color: _editorTheme['root']!.color ?? Colors.grey[400]!,
+              width: 0.2,
+            ),
+          ),
+          backgroundColor: _editorTheme['root']!.backgroundColor!,
+          focusColor: Colors.blueAccent.withAlpha(50),
+          hoverColor: Colors.grey.withAlpha(15),
+          splashColor: Colors.blueAccent.withAlpha(50),
+          textStyle: (() {
+            TextStyle style = widget.textStyle ?? _editorTheme['root']!;
+            if (style.color == null) {
+              style = style.copyWith(color: _editorTheme['root']!.color);
+            }
+            return style;
+          })(),
+        );
 
     _caretBlinkController = AnimationController(
       vsync: this,
@@ -84,25 +176,37 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
 
           _controller.connection = _connection;
           _connection!.show();
-          _connection!.setEditingState(TextEditingValue(
-            text: _controller.text,
-            selection: _controller.selection,
-          ));
+          _connection!.setEditingState(
+            TextEditingValue(
+              text: _controller.text,
+              selection: _controller.selection,
+            ),
+          );
         }
       }
     });
+
+    _controller.addListener(_resetCursorBlink);
+  }
+
+  void _resetCursorBlink() {
+    _caretBlinkController.value = 1.0;
+    _caretBlinkController
+      ..stop()
+      ..repeat(reverse: true);
   }
 
   @override
   void dispose() {
+    _controller.removeListener(_resetCursorBlink);
     _connection?.close();
     _caretBlinkController.dispose();
     super.dispose();
   }
-  
+
   void _handleArrowLeft(bool withShift) {
     final sel = _controller.selection;
-    
+
     int newOffset;
     if (!withShift && sel.start != sel.end) {
       newOffset = sel.start;
@@ -111,21 +215,22 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
     } else {
       newOffset = 0;
     }
-    
+
     if (withShift) {
-      _controller.setSelectionSilently(TextSelection(
-        baseOffset: sel.baseOffset,
-        extentOffset: newOffset,
-      ));
+      _controller.setSelectionSilently(
+        TextSelection(baseOffset: sel.baseOffset, extentOffset: newOffset),
+      );
     } else {
-      _controller.setSelectionSilently(TextSelection.collapsed(offset: newOffset));
+      _controller.setSelectionSilently(
+        TextSelection.collapsed(offset: newOffset),
+      );
     }
   }
-  
+
   void _handleArrowRight(bool withShift) {
     final sel = _controller.selection;
     final textLength = _controller.length;
-    
+
     int newOffset;
     if (!withShift && sel.start != sel.end) {
       newOffset = sel.end;
@@ -134,33 +239,35 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
     } else {
       newOffset = textLength;
     }
-    
+
     if (withShift) {
-      _controller.setSelectionSilently(TextSelection(
-        baseOffset: sel.baseOffset,
-        extentOffset: newOffset,
-      ));
+      _controller.setSelectionSilently(
+        TextSelection(baseOffset: sel.baseOffset, extentOffset: newOffset),
+      );
     } else {
-      _controller.setSelectionSilently(TextSelection.collapsed(offset: newOffset));
+      _controller.setSelectionSilently(
+        TextSelection.collapsed(offset: newOffset),
+      );
     }
   }
-  
+
   void _handleArrowUp(bool withShift) {
     final sel = _controller.selection;
     final currentLine = _controller.getLineAtOffset(sel.extentOffset);
-    
+
     if (currentLine <= 0) {
       if (withShift) {
-        _controller.setSelectionSilently(TextSelection(
-          baseOffset: sel.baseOffset,
-          extentOffset: 0,
-        ));
+        _controller.setSelectionSilently(
+          TextSelection(baseOffset: sel.baseOffset, extentOffset: 0),
+        );
       } else {
-        _controller.setSelectionSilently(const TextSelection.collapsed(offset: 0));
+        _controller.setSelectionSilently(
+          const TextSelection.collapsed(offset: 0),
+        );
       }
       return;
     }
-    
+
     final lineStart = _controller.getLineStartOffset(currentLine);
     final column = sel.extentOffset - lineStart;
     final prevLineStart = _controller.getLineStartOffset(currentLine - 1);
@@ -168,35 +275,37 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
     final prevLineLength = prevLineText.length;
     final newColumn = column.clamp(0, prevLineLength);
     final newOffset = prevLineStart + newColumn;
-    
+
     if (withShift) {
-      _controller.setSelectionSilently(TextSelection(
-        baseOffset: sel.baseOffset,
-        extentOffset: newOffset,
-      ));
+      _controller.setSelectionSilently(
+        TextSelection(baseOffset: sel.baseOffset, extentOffset: newOffset),
+      );
     } else {
-      _controller.setSelectionSilently(TextSelection.collapsed(offset: newOffset));
+      _controller.setSelectionSilently(
+        TextSelection.collapsed(offset: newOffset),
+      );
     }
   }
-  
+
   void _handleArrowDown(bool withShift) {
     final sel = _controller.selection;
     final currentLine = _controller.getLineAtOffset(sel.extentOffset);
     final lineCount = _controller.lineCount;
-    
+
     if (currentLine >= lineCount - 1) {
       final endOffset = _controller.length;
       if (withShift) {
-        _controller.setSelectionSilently(TextSelection(
-          baseOffset: sel.baseOffset,
-          extentOffset: endOffset,
-        ));
+        _controller.setSelectionSilently(
+          TextSelection(baseOffset: sel.baseOffset, extentOffset: endOffset),
+        );
       } else {
-        _controller.setSelectionSilently(TextSelection.collapsed(offset: endOffset));
+        _controller.setSelectionSilently(
+          TextSelection.collapsed(offset: endOffset),
+        );
       }
       return;
     }
-    
+
     final lineStart = _controller.getLineStartOffset(currentLine);
     final column = sel.extentOffset - lineStart;
     final nextLineStart = _controller.getLineStartOffset(currentLine + 1);
@@ -204,46 +313,49 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
     final nextLineLength = nextLineText.length;
     final newColumn = column.clamp(0, nextLineLength);
     final newOffset = nextLineStart + newColumn;
-    
+
     if (withShift) {
-      _controller.setSelectionSilently(TextSelection(
-        baseOffset: sel.baseOffset,
-        extentOffset: newOffset,
-      ));
+      _controller.setSelectionSilently(
+        TextSelection(baseOffset: sel.baseOffset, extentOffset: newOffset),
+      );
     } else {
-      _controller.setSelectionSilently(TextSelection.collapsed(offset: newOffset));
+      _controller.setSelectionSilently(
+        TextSelection.collapsed(offset: newOffset),
+      );
     }
   }
-  
+
   void _handleHome(bool withShift) {
     final sel = _controller.selection;
     final currentLine = _controller.getLineAtOffset(sel.extentOffset);
     final lineStart = _controller.getLineStartOffset(currentLine);
-    
+
     if (withShift) {
-      _controller.setSelectionSilently(TextSelection(
-        baseOffset: sel.baseOffset,
-        extentOffset: lineStart,
-      ));
+      _controller.setSelectionSilently(
+        TextSelection(baseOffset: sel.baseOffset, extentOffset: lineStart),
+      );
     } else {
-      _controller.setSelectionSilently(TextSelection.collapsed(offset: lineStart));
+      _controller.setSelectionSilently(
+        TextSelection.collapsed(offset: lineStart),
+      );
     }
   }
-  
+
   void _handleEnd(bool withShift) {
     final sel = _controller.selection;
     final currentLine = _controller.getLineAtOffset(sel.extentOffset);
     final lineText = _controller.getLineText(currentLine);
     final lineStart = _controller.getLineStartOffset(currentLine);
     final lineEnd = lineStart + lineText.length;
-    
+
     if (withShift) {
-      _controller.setSelectionSilently(TextSelection(
-        baseOffset: sel.baseOffset,
-        extentOffset: lineEnd,
-      ));
+      _controller.setSelectionSilently(
+        TextSelection(baseOffset: sel.baseOffset, extentOffset: lineEnd),
+      );
     } else {
-      _controller.setSelectionSilently(TextSelection.collapsed(offset: lineEnd));
+      _controller.setSelectionSilently(
+        TextSelection.collapsed(offset: lineEnd),
+      );
     }
   }
 
@@ -262,11 +374,11 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
               child: TwoDimensionalScrollable(
                 horizontalDetails: ScrollableDetails.horizontal(
                   controller: _hscrollController,
-                  physics: const ClampingScrollPhysics()
+                  physics: const ClampingScrollPhysics(),
                 ),
                 verticalDetails: ScrollableDetails.vertical(
                   controller: _vscrollController,
-                  physics: const ClampingScrollPhysics()
+                  physics: const ClampingScrollPhysics(),
                 ),
                 viewportBuilder: (_, voffset, hoffset) => CustomViewport(
                   verticalOffset: voffset,
@@ -277,36 +389,46 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
                   delegate: TwoDimensionalChildBuilderDelegate(
                     maxXIndex: 0,
                     maxYIndex: 0,
-                    builder: (_, vic){
+                    builder: (_, vic) {
                       return Focus(
                         focusNode: _focusNode,
                         onKeyEvent: (node, event) {
-                          if(event is KeyDownEvent || event is KeyRepeatEvent){
-                            final isShiftPressed = HardwareKeyboard.instance.isShiftPressed;
+                          if (event is KeyDownEvent ||
+                              event is KeyRepeatEvent) {
+                            final isShiftPressed =
+                                HardwareKeyboard.instance.isShiftPressed;
                             switch (event.logicalKey) {
                               case LogicalKeyboardKey.backspace:
                                 _controller.backspace();
+                                _resetCursorBlink();
                                 return KeyEventResult.handled;
                               case LogicalKeyboardKey.delete:
                                 _controller.delete();
+                                _resetCursorBlink();
                                 return KeyEventResult.handled;
                               case LogicalKeyboardKey.arrowDown:
                                 _handleArrowDown(isShiftPressed);
+                                _resetCursorBlink();
                                 return KeyEventResult.handled;
                               case LogicalKeyboardKey.arrowUp:
                                 _handleArrowUp(isShiftPressed);
+                                _resetCursorBlink();
                                 return KeyEventResult.handled;
                               case LogicalKeyboardKey.arrowRight:
                                 _handleArrowRight(isShiftPressed);
+                                _resetCursorBlink();
                                 return KeyEventResult.handled;
                               case LogicalKeyboardKey.arrowLeft:
                                 _handleArrowLeft(isShiftPressed);
+                                _resetCursorBlink();
                                 return KeyEventResult.handled;
                               case LogicalKeyboardKey.home:
                                 _handleHome(isShiftPressed);
+                                _resetCursorBlink();
                                 return KeyEventResult.handled;
                               case LogicalKeyboardKey.end:
                                 _handleEnd(isShiftPressed);
+                                _resetCursorBlink();
                                 return KeyEventResult.handled;
                               default:
                             }
@@ -315,6 +437,8 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
                         },
                         child: _CodeField(
                           _controller,
+                          _editorTheme,
+                          _language,
                           widget.innerPadding,
                           _vscrollController,
                           _hscrollController,
@@ -325,40 +449,42 @@ class _CodeForgeState extends State<CodeForge> with SingleTickerProviderStateMix
                           widget.enableFolding,
                           widget.enableGuideLines,
                           widget.enableGutter,
-                          widget.gutterStyle ?? const GutterStyle(),
-                          widget.selectionStyle ?? const CodeSelectionStyle(),
-                          widget.backgroundColor,
+                          widget.enableGutterDivider,
+                          _gutterStyle,
+                          _selectionStyle,
                         ),
                       );
-                    }
-                  )
-                )
+                    },
+                  ),
+                ),
               ),
             ),
           ),
         );
-      }
+      },
     );
   }
 }
 
-class _CodeField extends LeafRenderObjectWidget{
+class _CodeField extends LeafRenderObjectWidget {
   final CodeForgeController controller;
+  final Map<String, TextStyle> editorTheme;
+  final Mode language;
   final EdgeInsets? innerPadding;
   final ScrollController vscrollController, hscrollController;
   final FocusNode focusNode;
   final bool readOnly;
   final AnimationController caretBlinkController;
   final TextStyle? textStyle;
-  final bool enableFolding;
-  final bool enableGuideLines;
-  final bool enableGutter;
+  final bool enableFolding, enableGuideLines, enableGutter;
+  final bool enableGutterDivider;
   final GutterStyle gutterStyle;
   final CodeSelectionStyle selectionStyle;
-  final Color? backgroundColor;
 
   const _CodeField(
     this.controller,
+    this.editorTheme,
+    this.language,
     this.innerPadding,
     this.vscrollController,
     this.hscrollController,
@@ -369,15 +495,17 @@ class _CodeField extends LeafRenderObjectWidget{
     this.enableFolding,
     this.enableGuideLines,
     this.enableGutter,
+    this.enableGutterDivider,
     this.gutterStyle,
     this.selectionStyle,
-    this.backgroundColor,
   );
 
   @override
   RenderObject createRenderObject(BuildContext context) {
     return _CodeFieldRenderer(
       controller,
+      editorTheme,
+      language,
       innerPadding,
       vscrollController,
       hscrollController,
@@ -388,33 +516,34 @@ class _CodeField extends LeafRenderObjectWidget{
       enableFolding,
       enableGuideLines,
       enableGutter,
+      enableGutterDivider,
       gutterStyle,
       selectionStyle,
-      backgroundColor,
     );
   }
 
   @override
-  void updateRenderObject(BuildContext context, covariant RenderObject renderObject) {
-
-  }
-
+  void updateRenderObject(
+    BuildContext context,
+    covariant RenderObject renderObject,
+  ) {}
 }
 
 class _CodeFieldRenderer extends RenderBox {
   final CodeForgeController controller;
+  final Map<String, TextStyle> editorTheme;
+  final Mode language;
   final EdgeInsets? innerPadding;
   final ScrollController vscrollController, hscrollController;
   final FocusNode focusNode;
   final bool readOnly;
   final AnimationController caretBlinkController;
   final TextStyle? textStyle;
-  final bool enableFolding;
-  final bool enableGuideLines;
-  final bool enableGutter;
+  final bool enableFolding, enableGuideLines, enableGutter;
+  final bool enableGutterDivider;
   final GutterStyle gutterStyle;
   final CodeSelectionStyle selectionStyle;
-  final Color? backgroundColor;
+
   final Map<int, double> _lineWidthCache = {};
   final Map<int, String> _lineTextCache = {};
   final Map<int, ui.Paragraph> _paragraphCache = {};
@@ -425,13 +554,12 @@ class _CodeFieldRenderer extends RenderBox {
   late final Paint _bracketHighlightPainter;
   late final ui.ParagraphStyle _paragraphStyle;
   late final ui.TextStyle _uiTextStyle;
+  late final SyntaxHighlighter _syntaxHighlighter;
   late double _gutterWidth;
-  int _cachedLineCount = 0;
   bool _foldRangesNeedsClear = false;
-  int _cachedCaretOffset = -1;
-  int _cachedCaretLine = 0;
-  int _cachedCaretLineStart = 0;
-  
+  int _cachedLineCount = 0;
+  int _cachedCaretOffset = -1, _cachedCaretLine = 0, _cachedCaretLineStart = 0;
+
   ui.Paragraph _buildParagraph(String text) {
     final builder = ui.ParagraphBuilder(_paragraphStyle)
       ..pushStyle(_uiTextStyle)
@@ -441,8 +569,22 @@ class _CodeFieldRenderer extends RenderBox {
     return p;
   }
 
+  ui.Paragraph _buildHighlightedParagraph(int lineIndex, String text) {
+    final fontSize = textStyle?.fontSize ?? 14.0;
+    final fontFamily = textStyle?.fontFamily;
+    return _syntaxHighlighter.buildHighlightedParagraph(
+      lineIndex,
+      text,
+      _paragraphStyle,
+      fontSize,
+      fontFamily,
+    );
+  }
+
   _CodeFieldRenderer(
     this.controller,
+    this.editorTheme,
+    this.language,
     this.innerPadding,
     this.vscrollController,
     this.hscrollController,
@@ -453,17 +595,25 @@ class _CodeFieldRenderer extends RenderBox {
     this.enableFolding,
     this.enableGuideLines,
     this.enableGutter,
+    this.enableGutterDivider,
     this.gutterStyle,
     this.selectionStyle,
-    this.backgroundColor,
   ) {
     final fontSize = textStyle?.fontSize ?? 14.0;
     final fontFamily = textStyle?.fontFamily;
-    final color = textStyle?.color ?? Colors.black;
+    final color =
+        textStyle?.color ?? editorTheme['root']?.color ?? Colors.black;
     final lineHeightMultiplier = textStyle?.height ?? 1.2;
-    
+
     _lineHeight = fontSize * lineHeightMultiplier;
-    
+
+    _syntaxHighlighter = SyntaxHighlighter(
+      language: language,
+      editorTheme: editorTheme,
+      baseTextStyle: textStyle,
+      onHighlightComplete: markNeedsPaint,
+    );
+
     _gutterPadding = fontSize;
     if (enableGutter) {
       if (gutterStyle.gutterWidth != null) {
@@ -478,16 +628,16 @@ class _CodeFieldRenderer extends RenderBox {
       _gutterWidth = 0;
     }
     _cachedLineCount = controller.lineCount;
-    
+
     _caretPainter = Paint()
       ..color = selectionStyle.cursorColor ?? color
       ..style = PaintingStyle.fill;
-    
+
     _bracketHighlightPainter = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2;
-    
+
     _paragraphStyle = ui.ParagraphStyle(
       fontFamily: fontFamily,
       fontSize: fontSize,
@@ -498,7 +648,7 @@ class _CodeFieldRenderer extends RenderBox {
       fontSize: fontSize,
       fontFamily: fontFamily,
     );
-    
+
     vscrollController.addListener(markNeedsPaint);
     hscrollController.addListener(markNeedsPaint);
     caretBlinkController.addListener(markNeedsPaint);
@@ -507,9 +657,10 @@ class _CodeFieldRenderer extends RenderBox {
 
   void _ensureCaretVisible() {
     if (!vscrollController.hasClients || !hscrollController.hasClients) return;
-    
+
     final caretInfo = _getCaretInfo();
-    final caretX = caretInfo.offset.dx + _gutterWidth + (innerPadding?.left ?? 0);
+    final caretX =
+        caretInfo.offset.dx + _gutterWidth + (innerPadding?.left ?? 0);
     final caretY = caretInfo.offset.dy + (innerPadding?.top ?? 0);
     final caretHeight = caretInfo.height;
     final vScrollOffset = vscrollController.offset;
@@ -539,7 +690,11 @@ class _CodeFieldRenderer extends RenderBox {
       );
     } else if (caretX + 1.5 > hScrollOffset + viewportWidth) {
       hscrollController.animateTo(
-        caretX + 1.5 - viewportWidth + (innerPadding?.right ?? 0) + _gutterWidth,
+        caretX +
+            1.5 -
+            viewportWidth +
+            (innerPadding?.right ?? 0) +
+            _gutterWidth,
         duration: const Duration(milliseconds: 100),
         curve: Curves.easeOut,
       );
@@ -552,7 +707,7 @@ class _CodeFieldRenderer extends RenderBox {
       markNeedsPaint();
       return;
     }
-    
+
     if (controller.bufferNeedsRepaint) {
       controller.bufferNeedsRepaint = false;
       _ensureCaretVisible();
@@ -568,6 +723,7 @@ class _CodeFieldRenderer extends RenderBox {
       _lineWidthCache.remove(affectedLine);
       _lineTextCache.remove(affectedLine);
       _paragraphCache.remove(affectedLine);
+      _syntaxHighlighter.invalidateLines({affectedLine});
     }
     controller.clearDirtyRegion();
 
@@ -575,7 +731,8 @@ class _CodeFieldRenderer extends RenderBox {
       _cachedLineCount = newLineCount;
       _lineTextCache.clear();
       _paragraphCache.clear();
-      
+      _syntaxHighlighter.invalidateAll();
+
       if (enableGutter && gutterStyle.gutterWidth == null) {
         final fontSize = textStyle?.fontSize ?? 14.0;
         final digits = newLineCount.toString().length;
@@ -583,28 +740,28 @@ class _CodeFieldRenderer extends RenderBox {
         final foldIconSpace = enableFolding ? fontSize + 4 : 0;
         _gutterWidth = digitWidth + foldIconSpace + _gutterPadding;
       }
-      
+
       if (enableFolding) {
         _foldRangesNeedsClear = true;
       }
-      
+
       markNeedsLayout();
     } else {
       markNeedsPaint();
     }
-    
+
     _ensureCaretVisible();
   }
-  
+
   FoldRange? _computeFoldRangeForLine(int lineIndex) {
     if (!enableFolding) return null;
-    
+
     final line = controller.getLineText(lineIndex);
-    
+
     if (line.contains('{')) {
       int braceCount = 0;
       bool foundOpen = false;
-      
+
       for (int i = lineIndex; i < controller.lineCount; i++) {
         final checkLine = controller.getLineText(i);
         for (int c = 0; c < checkLine.length; c++) {
@@ -620,11 +777,11 @@ class _CodeFieldRenderer extends RenderBox {
         }
       }
     }
-    
+
     if (line.trim().endsWith(':')) {
       final startIndent = line.length - line.trimLeft().length;
       int endLine = lineIndex;
-      
+
       for (int j = lineIndex + 1; j < controller.lineCount; j++) {
         final next = controller.getLineText(j);
         if (next.trim().isEmpty) continue;
@@ -632,21 +789,21 @@ class _CodeFieldRenderer extends RenderBox {
         if (nextIndent <= startIndent) break;
         endLine = j;
       }
-      
+
       if (endLine > lineIndex) {
         return FoldRange(lineIndex, endLine);
       }
     }
-    
+
     return null;
   }
-  
+
   FoldRange? _getOrComputeFoldRange(int lineIndex) {
     if (_foldRangesNeedsClear) {
       _foldRanges.removeWhere((f) => !f.isFolded);
       _foldRangesNeedsClear = false;
     }
-    
+
     try {
       return _foldRanges.firstWhere((f) => f.startIndex == lineIndex);
     } catch (_) {
@@ -658,7 +815,7 @@ class _CodeFieldRenderer extends RenderBox {
       return fold;
     }
   }
-  
+
   void _toggleFold(FoldRange fold) {
     if (fold.isFolded) {
       _unfoldWithChildren(fold);
@@ -668,46 +825,51 @@ class _CodeFieldRenderer extends RenderBox {
     markNeedsLayout();
     markNeedsPaint();
   }
-  
+
   void _foldWithChildren(FoldRange parentFold) {
     parentFold.clearOriginallyFoldedChildren();
-    
+
     for (final childFold in _foldRanges) {
-      if (childFold.isFolded && 
+      if (childFold.isFolded &&
           childFold != parentFold &&
-          childFold.startIndex > parentFold.startIndex && 
+          childFold.startIndex > parentFold.startIndex &&
           childFold.endIndex <= parentFold.endIndex) {
         parentFold.addOriginallyFoldedChild(childFold);
         childFold.isFolded = false;
       }
     }
-    
+
     parentFold.isFolded = true;
   }
-  
+
   void _unfoldWithChildren(FoldRange parentFold) {
     parentFold.isFolded = false;
     for (final childFold in parentFold.originallyFoldedChildren) {
-      if (childFold.startIndex > parentFold.startIndex && 
+      if (childFold.startIndex > parentFold.startIndex &&
           childFold.endIndex <= parentFold.endIndex) {
         childFold.isFolded = true;
       }
     }
     parentFold.clearOriginallyFoldedChildren();
   }
-  
+
   bool _isLineFolded(int lineIndex) {
-    return _foldRanges.any((fold) => 
-      fold.isFolded && lineIndex > fold.startIndex && lineIndex <= fold.endIndex
+    return _foldRanges.any(
+      (fold) =>
+          fold.isFolded &&
+          lineIndex > fold.startIndex &&
+          lineIndex <= fold.endIndex,
     );
   }
-  
-  /// Finds the matching bracket for the bracket at [pos] in [text].
-  /// Returns the index of the matching bracket, or null if not found.
+
   int? _findMatchingBracket(String text, int pos) {
     const Map<String, String> pairs = {
-      '(': ')', '{': '}', '[': ']',
-      ')': '(', '}': '{', ']': '[',
+      '(': ')',
+      '{': '}',
+      '[': ']',
+      ')': '(',
+      '}': '{',
+      ']': '[',
     };
     const String openers = '({[';
 
@@ -739,15 +901,13 @@ class _CodeFieldRenderer extends RenderBox {
     }
     return null;
   }
-  
-  /// Finds matching bracket pair at cursor position.
-  /// Returns (bracket1, bracket2) as global text offsets, or (null, null) if none.
+
   (int?, int?) _getBracketPairAtCursor() {
     final cursorOffset = controller.selection.extentOffset;
     final text = controller.text;
-    
+
     if (cursorOffset < 0 || text.isEmpty) return (null, null);
-    
+
     if (cursorOffset > 0) {
       final before = text[cursorOffset - 1];
       if ('{}[]()'.contains(before)) {
@@ -757,7 +917,7 @@ class _CodeFieldRenderer extends RenderBox {
         }
       }
     }
-    
+
     if (cursorOffset < text.length) {
       final after = text[cursorOffset];
       if ('{}[]()'.contains(after)) {
@@ -767,10 +927,10 @@ class _CodeFieldRenderer extends RenderBox {
         }
       }
     }
-    
+
     return (null, null);
   }
-  
+
   FoldRange? _getFoldRangeAtLine(int lineIndex) {
     if (!enableFolding) return null;
     return _getOrComputeFoldRange(lineIndex);
@@ -779,13 +939,13 @@ class _CodeFieldRenderer extends RenderBox {
   int _findVisibleLineByYPosition(double y) {
     final lineCount = controller.lineCount;
     if (lineCount == 0) return 0;
-    
+
     final hasActiveFolds = _foldRanges.any((f) => f.isFolded);
-    
+
     if (!hasActiveFolds) {
       return (y / _lineHeight).floor().clamp(0, lineCount - 1);
     }
-    
+
     double currentY = 0;
     for (int i = 0; i < lineCount; i++) {
       if (_isLineFolded(i)) continue;
@@ -797,18 +957,24 @@ class _CodeFieldRenderer extends RenderBox {
     return lineCount - 1;
   }
 
-  ({int lineIndex, int columnIndex, Offset offset, double height}) _getCaretInfo() {
+  ({int lineIndex, int columnIndex, Offset offset, double height})
+  _getCaretInfo() {
     final lineCount = controller.lineCount;
     if (lineCount == 0) {
-      return (lineIndex: 0, columnIndex: 0, offset: Offset.zero, height: _lineHeight);
+      return (
+        lineIndex: 0,
+        columnIndex: 0,
+        offset: Offset.zero,
+        height: _lineHeight,
+      );
     }
-    
+
     if (controller.isBufferActive) {
       final lineIndex = controller.bufferLineIndex!;
       final columnIndex = controller.bufferCursorColumn;
       final lineY = lineIndex * _lineHeight;
       final lineText = controller.bufferLineText ?? '';
-      
+
       final para = _buildParagraph(lineText);
       final clampedCol = columnIndex.clamp(0, lineText.length);
       double caretX = 0.0;
@@ -818,7 +984,7 @@ class _CodeFieldRenderer extends RenderBox {
           caretX = boxes.last.right;
         }
       }
-      
+
       return (
         lineIndex: lineIndex,
         columnIndex: columnIndex,
@@ -828,7 +994,7 @@ class _CodeFieldRenderer extends RenderBox {
     }
 
     final cursorOffset = controller.selection.extentOffset;
-    
+
     int lineIndex;
     int lineStartOffset;
     if (cursorOffset == _cachedCaretOffset) {
@@ -841,10 +1007,10 @@ class _CodeFieldRenderer extends RenderBox {
       _cachedCaretLine = lineIndex;
       _cachedCaretLineStart = lineStartOffset;
     }
-    
+
     final columnIndex = cursorOffset - lineStartOffset;
     final lineY = lineIndex * _lineHeight;
-    
+
     String lineText;
     if (_lineTextCache.containsKey(lineIndex)) {
       lineText = _lineTextCache[lineIndex]!;
@@ -858,10 +1024,10 @@ class _CodeFieldRenderer extends RenderBox {
     if (_paragraphCache.containsKey(lineIndex)) {
       para = _paragraphCache[lineIndex]!;
     } else {
-      para = _buildParagraph(lineText);
+      para = _buildHighlightedParagraph(lineIndex, lineText);
       _paragraphCache[lineIndex] = para;
     }
-    
+
     final clampedCol = columnIndex.clamp(0, lineText.length);
     double caretX = 0.0;
     if (clampedCol > 0) {
@@ -898,14 +1064,16 @@ class _CodeFieldRenderer extends RenderBox {
     if (_paragraphCache.containsKey(tappedLineIndex)) {
       para = _paragraphCache[tappedLineIndex]!;
     } else {
-      para = _buildParagraph(lineText);
+      para = _buildHighlightedParagraph(tappedLineIndex, lineText);
       _paragraphCache[tappedLineIndex] = para;
     }
-    
+
     final localX = position.dx;
-    final textPosition = para.getPositionForOffset(Offset(localX, _lineHeight / 2));
+    final textPosition = para.getPositionForOffset(
+      Offset(localX, _lineHeight / 2),
+    );
     final columnIndex = textPosition.offset.clamp(0, lineText.length);
-    
+
     final lineStartOffset = controller.getLineStartOffset(tappedLineIndex);
     final absoluteOffset = lineStartOffset + columnIndex;
 
@@ -915,10 +1083,10 @@ class _CodeFieldRenderer extends RenderBox {
   @override
   void performLayout() {
     final lineCount = controller.lineCount;
-    
+
     final hasActiveFolds = _foldRanges.any((f) => f.isFolded);
     double visibleHeight;
-    
+
     if (!hasActiveFolds) {
       visibleHeight = lineCount * _lineHeight;
     } else {
@@ -929,11 +1097,12 @@ class _CodeFieldRenderer extends RenderBox {
         }
       }
     }
-    
+
     final contentHeight = visibleHeight + (innerPadding?.vertical ?? 0);
 
     const estimatedMaxWidth = 2000.0;
-    final contentWidth = estimatedMaxWidth + (innerPadding?.horizontal ?? 0) + _gutterWidth;
+    final contentWidth =
+        estimatedMaxWidth + (innerPadding?.horizontal ?? 0) + _gutterWidth;
 
     size = constraints.constrain(Size(contentWidth, contentHeight));
   }
@@ -944,35 +1113,40 @@ class _CodeFieldRenderer extends RenderBox {
     final viewTop = vscrollController.offset;
     final viewBottom = viewTop + vscrollController.position.viewportDimension;
     final lineCount = controller.lineCount;
-    
+
     final bufferActive = controller.isBufferActive;
     final bufferLineIndex = controller.bufferLineIndex;
     final bufferLineText = controller.bufferLineText;
-    
-    final bgColor = backgroundColor ?? Colors.white;
-    final textColor = textStyle?.color ?? Colors.black;
-    final fontSize = textStyle?.fontSize ?? 14.0;
+
+    final bgColor = editorTheme['root']?.backgroundColor ?? Colors.white;
+    final textColor = textStyle?.color ?? editorTheme['root']!.color!;
 
     canvas.save();
-    
+
     canvas.drawRect(offset & size, Paint()..color = bgColor);
-    
+
     final hasActiveFolds = _foldRanges.any((f) => f.isFolded);
-    
+
     int firstVisibleLine;
     int lastVisibleLine;
     double firstVisibleLineY;
-    
+
     if (!hasActiveFolds) {
-      firstVisibleLine = (viewTop / _lineHeight).floor().clamp(0, lineCount - 1);
-      lastVisibleLine = (viewBottom / _lineHeight).ceil().clamp(0, lineCount - 1);
+      firstVisibleLine = (viewTop / _lineHeight).floor().clamp(
+        0,
+        lineCount - 1,
+      );
+      lastVisibleLine = (viewBottom / _lineHeight).ceil().clamp(
+        0,
+        lineCount - 1,
+      );
       firstVisibleLineY = firstVisibleLine * _lineHeight;
     } else {
       double currentY = 0;
       firstVisibleLine = 0;
       lastVisibleLine = lineCount - 1;
       firstVisibleLineY = 0;
-      
+
       for (int i = 0; i < lineCount; i++) {
         if (_isLineFolded(i)) continue;
         if (currentY + _lineHeight > viewTop) {
@@ -982,7 +1156,7 @@ class _CodeFieldRenderer extends RenderBox {
         }
         currentY += _lineHeight;
       }
-      
+
       currentY = firstVisibleLineY;
       for (int i = firstVisibleLine; i < lineCount; i++) {
         if (_isLineFolded(i)) continue;
@@ -993,31 +1167,31 @@ class _CodeFieldRenderer extends RenderBox {
         }
       }
     }
-    
+
     if (enableGuideLines && (lastVisibleLine - firstVisibleLine) < 200) {
       _drawIndentGuides(
         canvas,
         offset,
         firstVisibleLine,
-        lastVisibleLine, 
+        lastVisibleLine,
         firstVisibleLineY,
         hasActiveFolds,
-        textColor
+        textColor,
       );
     }
-    
+
     double currentY = firstVisibleLineY;
     for (int i = firstVisibleLine; i <= lastVisibleLine && i < lineCount; i++) {
       if (hasActiveFolds && _isLineFolded(i)) continue;
-      
+
       final contentTop = currentY;
-      
+
       ui.Paragraph paragraph;
       String lineText;
-      
+
       if (bufferActive && i == bufferLineIndex && bufferLineText != null) {
         lineText = bufferLineText;
-        paragraph = _buildParagraph(bufferLineText);
+        paragraph = _buildHighlightedParagraph(i, bufferLineText);
       } else {
         if (_lineTextCache.containsKey(i)) {
           lineText = _lineTextCache[i]!;
@@ -1025,56 +1199,79 @@ class _CodeFieldRenderer extends RenderBox {
           lineText = controller.getLineText(i);
           _lineTextCache[i] = lineText;
         }
-        
+
         if (_paragraphCache.containsKey(i)) {
           paragraph = _paragraphCache[i]!;
         } else {
-          paragraph = _buildParagraph(lineText);
+          paragraph = _buildHighlightedParagraph(i, lineText);
           _paragraphCache[i] = paragraph;
         }
       }
-      
+
       final foldRange = _getFoldRangeAtLine(i);
       final isFoldStart = foldRange != null;
-      
+
       canvas.drawParagraph(
         paragraph,
-        offset + Offset(
-          _gutterWidth + (innerPadding?.left ?? 0) - hscrollController.offset,
-          (innerPadding?.top ?? 0) + contentTop - vscrollController.offset
-        )
+        offset +
+            Offset(
+              _gutterWidth +
+                  (innerPadding?.left ?? 0) -
+                  hscrollController.offset,
+              (innerPadding?.top ?? 0) + contentTop - vscrollController.offset,
+            ),
       );
-      
+
       if (isFoldStart && foldRange.isFolded) {
         final foldIndicator = _buildParagraph(' ...');
         final paraWidth = paragraph.longestLine;
         canvas.drawParagraph(
           foldIndicator,
-          offset + Offset(
-            _gutterWidth + (innerPadding?.left ?? 0) + paraWidth - hscrollController.offset,
-            (innerPadding?.top ?? 0) + contentTop - vscrollController.offset
-          )
+          offset +
+              Offset(
+                _gutterWidth +
+                    (innerPadding?.left ?? 0) +
+                    paraWidth -
+                    hscrollController.offset,
+                (innerPadding?.top ?? 0) +
+                    contentTop -
+                    vscrollController.offset,
+              ),
         );
       }
-      
+
       currentY += _lineHeight;
     }
-    
+
     if (enableGutter) {
-      _drawGutter(canvas, offset, viewTop, viewBottom, lineCount, fontSize, textColor, bgColor);
+      _drawGutter(
+        canvas,
+        offset,
+        viewTop,
+        viewBottom,
+        lineCount,
+        bgColor,
+        textStyle,
+      );
     }
-    
+
     if (focusNode.hasFocus) {
       _drawBracketHighlight(
-        canvas, offset, viewTop, viewBottom, 
-        firstVisibleLine, lastVisibleLine, firstVisibleLineY, 
-        hasActiveFolds, textColor
+        canvas,
+        offset,
+        viewTop,
+        viewBottom,
+        firstVisibleLine,
+        lastVisibleLine,
+        firstVisibleLineY,
+        hasActiveFolds,
+        textColor,
       );
     }
 
     if (focusNode.hasFocus && caretBlinkController.value > 0.5) {
       final caretInfo = _getCaretInfo();
-      
+
       double caretY;
       if (!hasActiveFolds) {
         caretY = caretInfo.lineIndex * _lineHeight;
@@ -1087,66 +1284,79 @@ class _CodeFieldRenderer extends RenderBox {
         }
       }
 
-      final caretX = _gutterWidth + (innerPadding?.left ?? 0)
-        + caretInfo.offset.dx
-        - hscrollController.offset;
-      final caretScreenY = (innerPadding?.top ?? 0)
-        + caretY
-        - vscrollController.offset;
+      final caretX =
+          _gutterWidth +
+          (innerPadding?.left ?? 0) +
+          caretInfo.offset.dx -
+          hscrollController.offset;
+      final caretScreenY =
+          (innerPadding?.top ?? 0) + caretY - vscrollController.offset;
 
       canvas.drawRect(
-        Rect.fromLTWH(
-          caretX,
-          caretScreenY,
-          1.5,
-          caretInfo.height
-        ),
+        Rect.fromLTWH(caretX, caretScreenY, 1.5, caretInfo.height),
         _caretPainter,
       );
     }
 
     canvas.restore();
   }
-  
-  void _drawGutter(Canvas canvas, Offset offset, double viewTop, double viewBottom, 
-      int lineCount, double fontSize, Color textColor, Color bgColor) {
+
+  void _drawGutter(
+    Canvas canvas,
+    Offset offset,
+    double viewTop,
+    double viewBottom,
+    int lineCount,
+    Color bgColor,
+    TextStyle? gutterTextStyle,
+  ) {
     final viewportHeight = vscrollController.position.viewportDimension;
-    
+
     final gutterBgColor = gutterStyle.backgroundColor ?? bgColor;
     canvas.drawRect(
       Rect.fromLTWH(offset.dx, offset.dy, _gutterWidth, viewportHeight),
-      Paint()..color = gutterBgColor
+      Paint()..color = gutterBgColor,
     );
-    
-    final dividerPaint = Paint()
-      //TODO
-      ..color = textColor.withOpacity(0.2)
-      ..strokeWidth = 1;
-    canvas.drawLine(
-      Offset(offset.dx + _gutterWidth - 1, offset.dy),
-      Offset(offset.dx + _gutterWidth - 1, offset.dy + viewportHeight),
-      dividerPaint,
-    );
-    
-    final lineNumberStyle = gutterStyle.lineNumberStyle ?? TextStyle(
-      //TODO
-      color: textColor.withOpacity(0.6),
-      fontSize: fontSize,
-    );
-    
+
+    if (enableGutterDivider) {
+      final dividerPaint = Paint()
+        ..color = (editorTheme['root']?.color ?? Colors.grey).withAlpha(150)
+        ..strokeWidth = 1;
+      canvas.drawLine(
+        Offset(offset.dx + _gutterWidth - 1, offset.dy),
+        Offset(offset.dx + _gutterWidth - 1, offset.dy + viewportHeight),
+        dividerPaint,
+      );
+    }
+
+    final lineNumberStyle =
+        gutterStyle.lineNumberStyle ??
+        (() {
+          if (gutterTextStyle == null) {
+            return editorTheme['root'];
+          } else if (gutterTextStyle.color == null) {
+            return gutterTextStyle.copyWith(color: editorTheme['root']?.color);
+          } else {
+            return gutterTextStyle;
+          }
+        })();
+
     final hasActiveFolds = _foldRanges.any((f) => f.isFolded);
-    
+
     int firstVisibleLine;
     double firstVisibleLineY;
-    
+
     if (!hasActiveFolds) {
-      firstVisibleLine = (viewTop / _lineHeight).floor().clamp(0, lineCount - 1);
+      firstVisibleLine = (viewTop / _lineHeight).floor().clamp(
+        0,
+        lineCount - 1,
+      );
       firstVisibleLineY = firstVisibleLine * _lineHeight;
     } else {
       double currentY = 0;
       firstVisibleLine = 0;
       firstVisibleLineY = 0;
-      
+
       for (int i = 0; i < lineCount; i++) {
         if (_isLineFolded(i)) continue;
         if (currentY + _lineHeight > viewTop) {
@@ -1157,68 +1367,98 @@ class _CodeFieldRenderer extends RenderBox {
         currentY += _lineHeight;
       }
     }
-    
+
     double currentY = firstVisibleLineY;
     for (int i = firstVisibleLine; i < lineCount; i++) {
       if (hasActiveFolds && _isLineFolded(i)) continue;
-      
+
       final contentTop = currentY;
-      
+
       if (contentTop > viewBottom) break;
-      
+
       if (contentTop + _lineHeight >= viewTop) {
-        final lineNumPara = _buildLineNumberParagraph((i + 1).toString(), lineNumberStyle);
+        final lineNumPara = _buildLineNumberParagraph(
+          (i + 1).toString(),
+          lineNumberStyle!,
+        );
         final numWidth = lineNumPara.longestLine;
-        
+
         canvas.drawParagraph(
           lineNumPara,
-          offset + Offset(
-            (_gutterWidth - numWidth) / 2 - (enableFolding ? fontSize / 2 : 0),
-            (innerPadding?.top ?? 0) + contentTop - vscrollController.offset
-          )
+          offset +
+              Offset(
+                (_gutterWidth - numWidth) / 2 -
+                    (enableFolding ? (lineNumberStyle.fontSize ?? 14) / 2 : 0),
+                (innerPadding?.top ?? 0) +
+                    contentTop -
+                    vscrollController.offset,
+              ),
         );
-        
+
         if (enableFolding) {
           final foldRange = _getFoldRangeAtLine(i);
           if (foldRange != null) {
             final isInsideFoldedParent = _foldRanges.any(
-              (parent) => parent.isFolded && parent.startIndex < i && parent.endIndex >= i
+              (parent) =>
+                  parent.isFolded &&
+                  parent.startIndex < i &&
+                  parent.endIndex >= i,
             );
-            
+
             if (!isInsideFoldedParent) {
-              final icon = foldRange.isFolded ? gutterStyle.foldedIcon : gutterStyle.unfoldedIcon;
-              final iconColor = foldRange.isFolded 
-                  ? (gutterStyle.foldedIconColor ?? textColor)
-                  //TODO
-                  : (gutterStyle.unfoldedIconColor ?? textColor.withOpacity(0.6));
-              
-              _drawFoldIcon(canvas, offset, icon, iconColor, fontSize, contentTop - vscrollController.offset);
+              final icon = foldRange.isFolded
+                  ? gutterStyle.foldedIcon
+                  : gutterStyle.unfoldedIcon;
+              final iconColor = foldRange.isFolded
+                  ? (gutterStyle.foldedIconColor ?? lineNumberStyle.color)
+                  : (gutterStyle.unfoldedIconColor ?? lineNumberStyle.color);
+
+              _drawFoldIcon(
+                canvas,
+                offset,
+                icon,
+                iconColor!,
+                lineNumberStyle.fontSize ?? 14,
+                contentTop - vscrollController.offset,
+              );
             }
           }
         }
       }
-      
+
       currentY += _lineHeight;
     }
   }
-  
+
   ui.Paragraph _buildLineNumberParagraph(String text, TextStyle style) {
-    final builder = ui.ParagraphBuilder(ui.ParagraphStyle(
-      fontSize: style.fontSize,
-      fontFamily: style.fontFamily,
-    ))
-      ..pushStyle(ui.TextStyle(
-        color: style.color,
-        fontSize: style.fontSize,
-        fontFamily: style.fontFamily,
-      ))
-      ..addText(text);
+    final builder =
+        ui.ParagraphBuilder(
+            ui.ParagraphStyle(
+              fontSize: style.fontSize,
+              fontFamily: style.fontFamily,
+            ),
+          )
+          ..pushStyle(
+            ui.TextStyle(
+              color: style.color,
+              fontSize: style.fontSize,
+              fontFamily: style.fontFamily,
+            ),
+          )
+          ..addText(text);
     final p = builder.build();
     p.layout(const ui.ParagraphConstraints(width: double.infinity));
     return p;
   }
-  
-  void _drawFoldIcon(Canvas canvas, Offset offset, IconData icon, Color color, double fontSize, double y) {
+
+  void _drawFoldIcon(
+    Canvas canvas,
+    Offset offset,
+    IconData icon,
+    Color color,
+    double fontSize,
+    double y,
+  ) {
     final iconPainter = TextPainter(
       text: TextSpan(
         text: String.fromCharCode(icon.codePoint),
@@ -1234,28 +1474,36 @@ class _CodeFieldRenderer extends RenderBox {
     iconPainter.layout();
     iconPainter.paint(
       canvas,
-      offset + Offset(
-        _gutterWidth - iconPainter.width - 2,
-        (innerPadding?.top ?? 0) + y + (_lineHeight - iconPainter.height) / 2
-      ),
+      offset +
+          Offset(
+            _gutterWidth - iconPainter.width - 2,
+            (innerPadding?.top ?? 0) +
+                y +
+                (_lineHeight - iconPainter.height) / 2,
+          ),
     );
   }
-  
+
   void _drawIndentGuides(
-      Canvas canvas, Offset offset, int firstVisibleLine, 
-      int lastVisibleLine, double firstVisibleLineY, 
-      bool hasActiveFolds, Color textColor
-    ) {
+    Canvas canvas,
+    Offset offset,
+    int firstVisibleLine,
+    int lastVisibleLine,
+    double firstVisibleLineY,
+    bool hasActiveFolds,
+    Color textColor,
+  ) {
     final viewTop = vscrollController.offset;
     final viewBottom = viewTop + vscrollController.position.viewportDimension;
     final tabSize = 4;
     final cursorOffset = controller.selection.extentOffset;
     final currentLine = controller.getLineAtOffset(cursorOffset);
-    List<({int startLine, int endLine, int indentLevel, double guideX})> blocks = [];
-    
+    List<({int startLine, int endLine, int indentLevel, double guideX})>
+    blocks = [];
+
     void processLine(int i) {
       if (hasActiveFolds && _isLineFolded(i)) return;
-      
+
       String lineText;
       if (_lineTextCache.containsKey(i)) {
         lineText = _lineTextCache[i]!;
@@ -1263,20 +1511,20 @@ class _CodeFieldRenderer extends RenderBox {
         lineText = controller.getLineText(i);
         _lineTextCache[i] = lineText;
       }
-      
+
       final trimmed = lineText.trimRight();
       if (!trimmed.endsWith('{') && !trimmed.endsWith(':')) return;
-      
+
       final leadingSpaces = lineText.length - lineText.trimLeft().length;
       final indentLevel = leadingSpaces ~/ tabSize;
-      
+
       int endLine = i + 1;
       while (endLine < controller.lineCount) {
         if (hasActiveFolds && _isLineFolded(endLine)) {
           endLine++;
           continue;
         }
-        
+
         String nextLine;
         if (_lineTextCache.containsKey(endLine)) {
           nextLine = _lineTextCache[endLine]!;
@@ -1284,29 +1532,29 @@ class _CodeFieldRenderer extends RenderBox {
           nextLine = controller.getLineText(endLine);
           _lineTextCache[endLine] = nextLine;
         }
-        
+
         if (nextLine.trim().isEmpty) {
           endLine++;
           continue;
         }
-        
+
         final nextLeading = nextLine.length - nextLine.trimLeft().length;
         if (nextLeading <= leadingSpaces) break;
         endLine++;
       }
-      
+
       if (endLine <= i + 1) return;
-      
+
       if (endLine < firstVisibleLine) return;
-      
+
       ui.Paragraph para;
       if (_paragraphCache.containsKey(i)) {
         para = _paragraphCache[i]!;
       } else {
-        para = _buildParagraph(lineText);
+        para = _buildHighlightedParagraph(i, lineText);
         _paragraphCache[i] = para;
       }
-      
+
       double guideX;
       if (leadingSpaces > 0) {
         final boxes = para.getBoxesForRange(0, leadingSpaces);
@@ -1314,23 +1562,35 @@ class _CodeFieldRenderer extends RenderBox {
       } else {
         guideX = 0;
       }
-      
-      blocks.add((startLine: i, endLine: endLine, indentLevel: indentLevel, guideX: guideX));
+
+      blocks.add((
+        startLine: i,
+        endLine: endLine,
+        indentLevel: indentLevel,
+        guideX: guideX,
+      ));
     }
-    
+
     final scanBackLimit = 500;
-    final scanStart = (firstVisibleLine - scanBackLimit).clamp(0, firstVisibleLine);
+    final scanStart = (firstVisibleLine - scanBackLimit).clamp(
+      0,
+      firstVisibleLine,
+    );
     for (int i = scanStart; i < firstVisibleLine; i++) {
       processLine(i);
     }
-    
-    for (int i = firstVisibleLine; i <= lastVisibleLine && i < controller.lineCount; i++) {
+
+    for (
+      int i = firstVisibleLine;
+      i <= lastVisibleLine && i < controller.lineCount;
+      i++
+    ) {
       processLine(i);
     }
-    
+
     int? selectedBlockIndex;
     int minBlockSize = 999999;
-    
+
     for (int idx = 0; idx < blocks.length; idx++) {
       final block = blocks[idx];
       if (currentLine >= block.startLine && currentLine < block.endLine) {
@@ -1341,19 +1601,16 @@ class _CodeFieldRenderer extends RenderBox {
         }
       }
     }
-    
+
     for (int idx = 0; idx < blocks.length; idx++) {
       final block = blocks[idx];
       final isSelected = selectedBlockIndex == idx;
-      
+
       final guidePaint = Paint()
-        ..color = isSelected 
-        //TODO
-            ? textColor.withOpacity(0.5)
-            : textColor.withOpacity(0.15)
+        ..color = isSelected ? textColor : textColor.withAlpha(100)
         ..strokeWidth = isSelected ? 1.0 : 0.5
         ..style = PaintingStyle.stroke;
-      
+
       double yTop;
       if (!hasActiveFolds) {
         yTop = (block.startLine + 1) * _lineHeight;
@@ -1363,7 +1620,7 @@ class _CodeFieldRenderer extends RenderBox {
           if (!_isLineFolded(j)) yTop += _lineHeight;
         }
       }
-      
+
       double yBottom;
       if (!hasActiveFolds) {
         yBottom = (block.endLine - 1) * _lineHeight + _lineHeight;
@@ -1373,23 +1630,34 @@ class _CodeFieldRenderer extends RenderBox {
           if (!_isLineFolded(j)) yBottom += _lineHeight;
         }
       }
-      
-      final screenYTop = offset.dy + (innerPadding?.top ?? 0) + yTop - vscrollController.offset;
-      final screenYBottom = offset.dy + (innerPadding?.top ?? 0) + yBottom - vscrollController.offset;
-      
+
+      final screenYTop =
+          offset.dy +
+          (innerPadding?.top ?? 0) +
+          yTop -
+          vscrollController.offset;
+      final screenYBottom =
+          offset.dy +
+          (innerPadding?.top ?? 0) +
+          yBottom -
+          vscrollController.offset;
+
       if (screenYBottom < 0 || screenYTop > viewBottom - viewTop) continue;
-      
-      final screenGuideX = offset.dx
-        + _gutterWidth
-        + (innerPadding?.left ?? 0) 
-        + block.guideX
-        - hscrollController.offset;
-      
-      if (screenGuideX < offset.dx + _gutterWidth || screenGuideX > offset.dx + size.width) continue;
-      
+
+      final screenGuideX =
+          offset.dx +
+          _gutterWidth +
+          (innerPadding?.left ?? 0) +
+          block.guideX -
+          hscrollController.offset;
+
+      if (screenGuideX < offset.dx + _gutterWidth ||
+          screenGuideX > offset.dx + size.width)
+        continue;
+
       final clampedYTop = screenYTop.clamp(0.0, viewBottom - viewTop);
       final clampedYBottom = screenYBottom.clamp(0.0, viewBottom - viewTop);
-      
+
       canvas.drawLine(
         Offset(screenGuideX, clampedYTop),
         Offset(screenGuideX, clampedYBottom),
@@ -1397,36 +1665,62 @@ class _CodeFieldRenderer extends RenderBox {
       );
     }
   }
-  
+
   void _drawBracketHighlight(
-    Canvas canvas, Offset offset, double viewTop, double viewBottom,
-    int firstVisibleLine, int lastVisibleLine, double firstVisibleLineY,
-    bool hasActiveFolds, Color textColor
+    Canvas canvas,
+    Offset offset,
+    double viewTop,
+    double viewBottom,
+    int firstVisibleLine,
+    int lastVisibleLine,
+    double firstVisibleLineY,
+    bool hasActiveFolds,
+    Color textColor,
   ) {
     final (bracket1, bracket2) = _getBracketPairAtCursor();
     if (bracket1 == null || bracket2 == null) return;
-    
+
     final line1 = controller.getLineAtOffset(bracket1);
     final line2 = controller.getLineAtOffset(bracket2);
-    
-    if (line1 >= firstVisibleLine && line1 <= lastVisibleLine && 
+
+    if (line1 >= firstVisibleLine &&
+        line1 <= lastVisibleLine &&
         (!hasActiveFolds || !_isLineFolded(line1))) {
-      _drawBracketBox(canvas, offset, bracket1, line1, hasActiveFolds, textColor);
+      _drawBracketBox(
+        canvas,
+        offset,
+        bracket1,
+        line1,
+        hasActiveFolds,
+        textColor,
+      );
     }
-    
-    if (line2 >= firstVisibleLine && line2 <= lastVisibleLine && 
+
+    if (line2 >= firstVisibleLine &&
+        line2 <= lastVisibleLine &&
         (!hasActiveFolds || !_isLineFolded(line2))) {
-      _drawBracketBox(canvas, offset, bracket2, line2, hasActiveFolds, textColor);
+      _drawBracketBox(
+        canvas,
+        offset,
+        bracket2,
+        line2,
+        hasActiveFolds,
+        textColor,
+      );
     }
   }
-  
+
   void _drawBracketBox(
-    Canvas canvas, Offset offset, int bracketOffset, int lineIndex,
-    bool hasActiveFolds, Color textColor
+    Canvas canvas,
+    Offset offset,
+    int bracketOffset,
+    int lineIndex,
+    bool hasActiveFolds,
+    Color textColor,
   ) {
     final lineStartOffset = controller.getLineStartOffset(lineIndex);
     final columnIndex = bracketOffset - lineStartOffset;
-    
+
     String lineText;
     if (_lineTextCache.containsKey(lineIndex)) {
       lineText = _lineTextCache[lineIndex]!;
@@ -1434,22 +1728,22 @@ class _CodeFieldRenderer extends RenderBox {
       lineText = controller.getLineText(lineIndex);
       _lineTextCache[lineIndex] = lineText;
     }
-    
+
     if (columnIndex < 0 || columnIndex >= lineText.length) return;
-    
+
     ui.Paragraph para;
     if (_paragraphCache.containsKey(lineIndex)) {
       para = _paragraphCache[lineIndex]!;
     } else {
-      para = _buildParagraph(lineText);
+      para = _buildHighlightedParagraph(lineIndex, lineText);
       _paragraphCache[lineIndex] = para;
     }
-    
+
     final boxes = para.getBoxesForRange(columnIndex, columnIndex + 1);
     if (boxes.isEmpty) return;
-    
+
     final box = boxes.first;
-    
+
     double lineY;
     if (!hasActiveFolds) {
       lineY = lineIndex * _lineHeight;
@@ -1459,24 +1753,23 @@ class _CodeFieldRenderer extends RenderBox {
         if (!_isLineFolded(i)) lineY += _lineHeight;
       }
     }
-    
-    final screenX = offset.dx
-      + _gutterWidth
-      + (innerPadding?.left ?? 0) 
-      + box.left
-      - hscrollController.offset;
-    final screenY = offset.dy
-      + (innerPadding?.top ?? 0) 
-      + lineY
-      - vscrollController.offset;
-    
+
+    final screenX =
+        offset.dx +
+        _gutterWidth +
+        (innerPadding?.left ?? 0) +
+        box.left -
+        hscrollController.offset;
+    final screenY =
+        offset.dy + (innerPadding?.top ?? 0) + lineY - vscrollController.offset;
+
     final bracketRect = Rect.fromLTWH(
       screenX - 1,
       screenY,
       box.right - box.left + 2,
-      _lineHeight
+      _lineHeight,
     );
-    
+
     _bracketHighlightPainter.color = textColor;
     canvas.drawRect(bracketRect, _bracketHighlightPainter);
   }
@@ -1484,6 +1777,7 @@ class _CodeFieldRenderer extends RenderBox {
   @override
   void dispose() {
     controller.removeListener(_onControllerChange);
+    _syntaxHighlighter.dispose();
     super.dispose();
   }
 
@@ -1495,21 +1789,27 @@ class _CodeFieldRenderer extends RenderBox {
     if (event is PointerDownEvent && event.buttons == kPrimaryButton) {
       focusNode.requestFocus();
       final localPosition = event.localPosition;
-      
+
       if (enableFolding && enableGutter && localPosition.dx < _gutterWidth) {
-        final clickY = localPosition.dy + vscrollController.offset - (innerPadding?.top ?? 0);
-        
+        final clickY =
+            localPosition.dy +
+            vscrollController.offset -
+            (innerPadding?.top ?? 0);
+
         final hasActiveFolds = _foldRanges.any((f) => f.isFolded);
         int clickedLine;
-        
+
         if (!hasActiveFolds) {
-          clickedLine = (clickY / _lineHeight).floor().clamp(0, controller.lineCount - 1);
+          clickedLine = (clickY / _lineHeight).floor().clamp(
+            0,
+            controller.lineCount - 1,
+          );
         } else {
           clickedLine = 0;
           double currentY = 0;
           for (int i = 0; i < controller.lineCount; i++) {
             if (_isLineFolded(i)) continue;
-            
+
             if (clickY >= currentY && clickY < currentY + _lineHeight) {
               clickedLine = i;
               break;
@@ -1517,7 +1817,7 @@ class _CodeFieldRenderer extends RenderBox {
             currentY += _lineHeight;
           }
         }
-        
+
         final foldRange = _getFoldRangeAtLine(clickedLine);
         if (foldRange != null) {
           _toggleFold(foldRange);
@@ -1525,13 +1825,51 @@ class _CodeFieldRenderer extends RenderBox {
         }
         return;
       }
-      
+
       final contentPosition = Offset(
-        localPosition.dx - _gutterWidth - (innerPadding?.left ?? 0) + hscrollController.offset,
+        localPosition.dx -
+            _gutterWidth -
+            (innerPadding?.left ?? 0) +
+            hscrollController.offset,
         localPosition.dy - (innerPadding?.top ?? 0) + vscrollController.offset,
       );
       final textOffset = _getTextOffsetFromPosition(contentPosition);
       controller.selection = TextSelection.collapsed(offset: textOffset);
     }
   }
+}
+
+/// Represents a foldable code region
+class FoldRange {
+  final int startIndex;
+  final int endIndex;
+  bool isFolded = false;
+  List<FoldRange> originallyFoldedChildren = [];
+
+  FoldRange(this.startIndex, this.endIndex);
+
+  void addOriginallyFoldedChild(FoldRange child) {
+    if (!originallyFoldedChildren.contains(child)) {
+      originallyFoldedChildren.add(child);
+    }
+  }
+
+  void clearOriginallyFoldedChildren() {
+    originallyFoldedChildren.clear();
+  }
+
+  bool containsLine(int line) {
+    return line > startIndex && line <= endIndex;
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is FoldRange &&
+        other.startIndex == startIndex &&
+        other.endIndex == endIndex;
+  }
+
+  @override
+  int get hashCode => startIndex.hashCode ^ endIndex.hashCode;
 }
