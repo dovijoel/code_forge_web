@@ -12,12 +12,11 @@ import 'syntax_highlighter.dart';
 import 'package:re_highlight/re_highlight.dart';
 import 'package:re_highlight/styles/vs2015.dart';
 import 'package:re_highlight/languages/python.dart';
+import 'package:markdown_widget/markdown_widget.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
-
-//TODO: implement LSP hover
 
 class CodeForge extends StatefulWidget {
   final CodeForgeController? controller;
@@ -123,13 +122,13 @@ class _CodeForgeState extends State<CodeForge>
     _vscrollController = widget.verticalScrollController ?? ScrollController();
     _editorTheme = widget.editorTheme ?? vs2015Theme;
     _language = widget.language ?? langPython;
-    _suggestionNotifier = ValueNotifier<List<dynamic>?>(null);
-    _hoverNotifier = ValueNotifier<List<dynamic>?>(null);
+    _suggestionNotifier = ValueNotifier(null);
+    _hoverNotifier = ValueNotifier(null);
     _diagnosticsNotifier = ValueNotifier<List<LspErrors>>([]);
-    _aiNotifier = ValueNotifier<String?>(null);
-    _aiOffsetNotifier = ValueNotifier<Offset?>(null);
-    _contextMenuOffsetNotifier = ValueNotifier<Offset>(const Offset(-1, -1));
-    _selectionActiveNotifier = ValueNotifier<bool>(false);
+    _aiNotifier = ValueNotifier(null);
+    _aiOffsetNotifier = ValueNotifier(null);
+    _contextMenuOffsetNotifier = ValueNotifier(const Offset(-1, -1));
+    _selectionActiveNotifier = ValueNotifier(false);
     _isHoveringPopup = ValueNotifier<bool>(false);
     _controller.manualAiCompletion = getManualAiSuggestion;
     _selectionStyle = widget.selectionStyle ?? CodeSelectionStyle();
@@ -817,6 +816,7 @@ class _CodeForgeState extends State<CodeForge>
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
     return LayoutBuilder(
       builder: (_, constraints) {
         return Stack(
@@ -1012,6 +1012,7 @@ class _CodeForgeState extends State<CodeForge>
                                 offsetNotifier: _offsetNotifier,
                                 aiNotifier: _aiNotifier,
                                 aiOffsetNotifier: _aiOffsetNotifier,
+                                isHoveringPopup: _isHoveringPopup,
                               ),
                             );
                           },
@@ -1103,7 +1104,132 @@ class _CodeForgeState extends State<CodeForge>
                 );
               },
             ),
-            _buildHoverPopup(),
+            ValueListenableBuilder(
+              valueListenable: _hoverNotifier,
+              builder: (_, hov, c){
+                if(hov == null || widget.lspConfig == null) return SizedBox.shrink();
+                final Offset position = hov[0];
+                final Map<String, int> lineChar = hov[1];
+                final hoverScrollController = ScrollController();
+                final width = _isMobile ? screenWidth * 0.63 : screenWidth * 0.3;
+                final maxHeight = _isMobile ? screenHeight * 0.4 : 550.0;
+                return Positioned(
+                  top: (screenHeight - position.dy) < maxHeight ? position.dy - maxHeight : position.dy,
+                  left: (screenWidth - position.dx) < width ? position.dx - width : position.dx,
+                  child: MouseRegion(
+                    onEnter: (_) => _isHoveringPopup.value = true,
+                    onExit: (_) {
+                      _isHoveringPopup.value = false;
+                      _hoverNotifier.value = null;
+                    },
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: width,
+                        maxHeight: maxHeight
+                      ),
+                      child: Card(
+                        color: _hoverDetailsStyle.backgroundColor,
+                        shape: _hoverDetailsStyle.shape,
+                        child: FutureBuilder<String>(
+                            future: (() async{
+                              final lspConfig = widget.lspConfig;
+                              final line = lineChar['line']!;
+                              final character = lineChar['character']!;
+                              final diagnostic = _diagnosticsNotifier.value.firstWhere(
+                                (diag) {
+                                  final diagStartLine = diag.range['start']['line'] as int;
+                                  final diagEndLine = diag.range['end']['line'] as int;
+                                  final diagStartChar = diag.range['start']['character'] as int;
+                                  final diagEndChar = diag.range['end']['character'] as int;
+                                  
+                                  if (line < diagStartLine || line > diagEndLine) {
+                                    return false;
+                                  }
+                                  
+                                  if (line == diagStartLine && line == diagEndLine) {
+                                    return character >= diagStartChar && character < diagEndChar;
+                                  } else if (line == diagStartLine) {
+                                    return character >= diagStartChar;
+                                  } else if (line == diagEndLine) {
+                                    return character < diagEndChar;
+                                  } else {
+                                    return true;
+                                  }
+                                },
+                                orElse: () => LspErrors(severity: 0, range: {}, message: ''),
+                              );
+                        
+                              if(diagnostic.message.isNotEmpty){
+                                return diagnostic.message;
+                              }
+                        
+                              if(lspConfig != null){
+                                return await lspConfig.getHover(line, character);
+                              }
+                        
+                              final hoverDetails = await lspConfig!.getHover(line, character);
+                              return hoverDetails;
+                            })(),
+                            builder: (_, snapShot) {
+                              if (snapShot.hasError) {
+                                return SizedBox.shrink();
+                              }
+                              final data = snapShot.data;
+                              if (data == null || data.isEmpty) {
+                                return SizedBox.shrink();
+                              }
+                              if (snapShot.connectionState == ConnectionState.waiting) {
+                                return Text(
+                                  "Loading...",
+                                  style: _hoverDetailsStyle.textStyle,
+                                );
+                              }
+                              return Padding(
+                                padding: const EdgeInsets.all(8.0),
+                                child: RawScrollbar(
+                                  controller: hoverScrollController,
+                                  thumbVisibility: true,
+                                  thumbColor: _editorTheme['root']!.color!.withAlpha(100),
+                                  child: SingleChildScrollView(
+                                    controller: hoverScrollController,
+                                    child: MarkdownBlock(
+                                      data: data,
+                                      config: MarkdownConfig.darkConfig.copy(
+                                        configs: [
+                                          PConfig(
+                                            textStyle: _hoverDetailsStyle.textStyle
+                                          ),
+                                          PreConfig(
+                                            language: widget.lspConfig?.languageId ?? "dart",
+                                            theme: _editorTheme,
+                                            textStyle: TextStyle(
+                                              fontSize: _hoverDetailsStyle.textStyle.fontSize
+                                            ),
+                                            styleNotMatched: TextStyle(
+                                              color: _editorTheme['root']!.color
+                                            ),
+                                            decoration: BoxDecoration(
+                                              borderRadius: BorderRadius.zero,
+                                              border: Border.all(
+                                                width: 0.2,
+                                                color: _editorTheme['root']!.color ?? Colors.grey
+                                              )
+                                            )
+                                          )
+                                        ]
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }
+                          ),
+                      ),
+                    ),
+                  ),
+                );
+              }
+            )
           ],
         );
       },
@@ -1162,90 +1288,7 @@ class _CodeForgeState extends State<CodeForge>
     _aiOffsetNotifier.value = null;
   }
 
-  Widget _buildHoverPopup() {
-    return ValueListenableBuilder<List<dynamic>?>(
-      valueListenable: _hoverNotifier,
-      builder: (context, hoverData, _) {
-        if (hoverData == null || hoverData.isEmpty) {
-          return const SizedBox.shrink();
-        }
 
-        final position = hoverData[0] as Offset;
-        final lineChar = hoverData[1] as Map<String, int>;
-
-        return Positioned(
-          left: position.dx,
-          top: position.dy - 80,
-          child: MouseRegion(
-            onEnter: (_) => _isHoveringPopup.value = true,
-            onExit: (_) {
-              _isHoveringPopup.value = false;
-              _hoverNotifier.value = null;
-            },
-            child: Material(
-              elevation: 6,
-              color: _hoverDetailsStyle.backgroundColor,
-              shape: _hoverDetailsStyle.shape,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(
-                  maxWidth: 400,
-                  maxHeight: 250,
-                ),
-                child: FutureBuilder<String?>(
-                  future: _getHoverContent(
-                    lineChar['line']!,
-                    lineChar['character']!,
-                  ),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: _hoverDetailsStyle.textStyle.color,
-                          ),
-                        ),
-                      );
-                    }
-
-                    final content = snapshot.data;
-                    if (content == null || content.isEmpty) {
-                      return const SizedBox.shrink();
-                    }
-
-                    return Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: SingleChildScrollView(
-                        child: Text(
-                          content,
-                          style: _hoverDetailsStyle.textStyle,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<String?> _getHoverContent(int line, int character) async {
-    if (widget.lspConfig == null || !_lspReady) return null;
-
-    try {
-      final hover = await widget.lspConfig!.getHover(line, character);
-      if (hover.isNotEmpty) return hover;
-    } catch (e) {
-      debugPrint('Error getting hover: $e');
-    }
-    return null;
-  }
 }
 
 class _CodeField extends LeafRenderObjectWidget {
@@ -1264,7 +1307,7 @@ class _CodeField extends LeafRenderObjectWidget {
   final GutterStyle gutterStyle;
   final CodeSelectionStyle selectionStyle;
   final List<LspErrors> diagnostics;
-  final ValueNotifier<bool> selectionActiveNotifier;
+  final ValueNotifier<bool> selectionActiveNotifier, isHoveringPopup;
   final ValueNotifier<Offset> contextMenuOffsetNotifier, offsetNotifier;
   final ValueNotifier<List<dynamic>?> hoverNotifier;
   final ValueNotifier<String?> aiNotifier;
@@ -1294,6 +1337,7 @@ class _CodeField extends LeafRenderObjectWidget {
     required this.hoverNotifier,
     required this.aiNotifier,
     required this.aiOffsetNotifier,
+    required this.isHoveringPopup,
     required this.context,
     required this.lineWrap,
     this.textStyle,
@@ -1331,7 +1375,8 @@ class _CodeField extends LeafRenderObjectWidget {
       lineWrap: lineWrap,
       offsetNotifier: offsetNotifier,
       aiNotifier: aiNotifier,
-      aiOffsetNotifier: aiOffsetNotifier
+      aiOffsetNotifier: aiOffsetNotifier,
+      isHoveringPopup: isHoveringPopup
     );
   }
 
@@ -1364,7 +1409,7 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
   final GutterStyle gutterStyle;
   final CodeSelectionStyle selectionStyle;
   final bool isMobile, lineWrap;
-  final ValueNotifier<bool> selectionActiveNotifier;
+  final ValueNotifier<bool> selectionActiveNotifier, isHoveringPopup;
   final ValueNotifier<Offset> contextMenuOffsetNotifier, offsetNotifier;
   final ValueNotifier<List<dynamic>?> hoverNotifier;
   final ValueNotifier<Offset?> aiOffsetNotifier;
@@ -1465,6 +1510,7 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     required this.hoverNotifier,
     required this.aiNotifier,
     required this.aiOffsetNotifier,
+    required this.isHoveringPopup,
     required this.context,
     required this.lineWrap,
     this.languageId,
@@ -3524,13 +3570,21 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     );
     final textOffset = _getTextOffsetFromPosition(contentPosition);
 
-    if (event is PointerHoverEvent && !isMobile) {
-      _hoverTimer?.cancel();
-      if (hoverNotifier.value == null && _isOffsetOverWord(textOffset)) {
-        _hoverTimer = Timer(const Duration(milliseconds: 800), () {
+    if(event is PointerHoverEvent){
+      if(!(hoverNotifier.value != null && isHoveringPopup.value)){
+        hoverNotifier.value = null;
+      }
+      
+      if(
+        (hoverNotifier.value == null || !isHoveringPopup.value) && _isOffsetOverWord(textOffset)
+        ){
+        _hoverTimer?.cancel();
+        _hoverTimer = Timer(Duration(milliseconds: 1500), (){
           final lineChar = _offsetToLineChar(textOffset);
-          hoverNotifier.value = [localPosition, lineChar];
+          hoverNotifier.value = [event.localPosition, lineChar];
         });
+      } else {
+        hoverNotifier.value = null;
       }
     }
 

@@ -36,11 +36,11 @@ class _MyAppState extends State<MyApp> {
           filePath: "/home/athul/Projects/EhEh/sample.py",
           controller: _controller,
           textStyle: GoogleFonts.jetBrainsMono(),
-          aiCompletion: AiCompletion(
+          /* aiCompletion: AiCompletion(
             model: Gemini(
               apiKey: "AIzaSyB-1JwovLrD9CJoZtEj5ZS43YJ7z7fAl9Q"
             )
-          ),
+          ), */
           lspConfig: LspSocketConfig(
             filePath: "/home/athul/Projects/EhEh/sample.py",
             languageId: "python",
