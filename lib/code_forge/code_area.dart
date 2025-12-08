@@ -24,8 +24,6 @@ import 'package:flutter/services.dart';
 //TODO: Rangse wise LSP semantic highlight.
 //TODO: Keyboard shortcuts
 //TODO: Public API methods in controller.
-//FIXME: LSP Completion empty for large files.
-//FIXME: Dart analyzer not returning completions.
 
 class CodeForge extends StatefulWidget {
   final CodeForgeController? controller;
@@ -298,11 +296,11 @@ class _CodeForgeState extends State<CodeForge>
 
     _controller.addListener(() {
       final text = _controller.text;
-      final lines = _controller.lines;
-      final line = _controller.lineCount - 1;
-      final character = lines.isNotEmpty ? lines.last.length : 0;
       final currentSelection = _controller.selection;
       final cursorPosition = currentSelection.extentOffset;
+      final line = _controller.getLineAtOffset(cursorPosition);
+      final lineStartOffset = _controller.getLineStartOffset(line);
+      final character = cursorPosition - lineStartOffset;
       final prefix = _getCurrentWordPrefix(text, cursorPosition);
 
       _isTyping = false;
@@ -311,6 +309,10 @@ class _CodeForgeState extends State<CodeForge>
 
       final oldText = _previousValue;
       final oldSelection = _prevSelection;
+
+      if(_hoverNotifier.value != null){
+        _hoverNotifier.value = null;
+      }
 
       if (widget.lspConfig != null && _lspReady && text != _previousValue) {
         _previousValue = text;

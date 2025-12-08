@@ -40,11 +40,22 @@ class _MyAppState extends State<MyApp> {
       args: ["--stdio"],
       filePath: "/home/athul/Projects/EhEh/sample.py",
       workspacePath: "/home/athul/Projects/EhEh",
-      languageId: "dart"
+      languageId: "python"
     );
     return data;
   } */
 
+/*   Future<LspConfig> getLsp() async{
+    final data = await LspStdioConfig.start(
+      executable: "/home/athul/flutter/flutter/bin//dart",
+      args: ["language-server", "--protocol=lsp"],
+      filePath: "/home/athul/Projects/EhEh/server/lib/server.dart",
+      workspacePath: "/home/athul/Projects/EhEh/server/lib",
+      languageId: "dart"
+    );
+    return data;
+  }
+ */
   @override
   void initState(){
     // _controller.text = small_code;
@@ -80,6 +91,7 @@ class _MyAppState extends State<MyApp> {
               lspConfig: snapshot.data,
               filePath: "/home/athul/Projects/code_forge/lib/code_forge/code_area.dart",
               // filePath: "/home/athul/Projects/EhEh/numpy_source.py",
+              // filePath: "/home/athul/Projects/EhEh/server/lib/server.dart",
               gutterStyle: GutterStyle(
                 // backgroundColor: Color(0xFF252526),
                 lineNumberStyle: TextStyle(
