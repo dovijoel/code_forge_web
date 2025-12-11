@@ -1,5 +1,5 @@
 name: code_forge
-description: "A sophisticated code editor package featuring AI code completion, Language Server Protocol (LSP) support, syntax highlighting, and advanced editing capabilities. Delivers a rich developer experience with features inspired by VS Code and Monaco Editor."
+description: "A sophisticated code editor package with AI completion, LSP support, syntax highlighting, and advanced editing capabilities."
 version: 1.0.1
 homepage: https://github.com/heckmon/code_forge
 
