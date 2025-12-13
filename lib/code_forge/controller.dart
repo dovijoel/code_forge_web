@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import '../code_forge.dart';
 import 'rope.dart';
@@ -33,6 +34,20 @@ import 'package:flutter/services.dart';
 class CodeForgeController implements DeltaTextInputClient {
   static const _flushDelay = Duration(milliseconds: 300);
   final List<VoidCallback> _listeners = [];
+  Timer? _flushTimer;
+  String? _cachedText, _bufferLineText;
+  bool _bufferDirty = false, bufferNeedsRepaint = false, selectionOnly = false;
+  int _bufferLineRopeStart = 0, _bufferLineOriginalLength = 0;
+  int _cachedTextVersion = -1, _currentVersion = 0;
+  int? dirtyLine, _bufferLineIndex;
+  String? _lastSentText;
+  TextSelection? _lastSentSelection;
+  UndoRedoController? _undoController;
+  void Function(int lineNumber)? _toggleFoldCallback;
+  VoidCallback? _foldAllCallback, _unfoldAllCallback;
+
+  /// Currently opened file.
+  String? openedFile;
 
   /// Callback for manually triggering AI completion.
   /// Set this to enable custom AI completion triggers.
@@ -43,8 +58,6 @@ class CodeForgeController implements DeltaTextInputClient {
 
   /// The text input connection to the platform.
   TextInputConnection? connection;
-
-  Timer? _flushTimer;
 
   /// The range of text that has been modified and needs reprocessing.
   TextRange? dirtyRegion;
@@ -61,15 +74,8 @@ class CodeForgeController implements DeltaTextInputClient {
   /// search results or other text ranges.
   List<SearchHighlight> searchHighlights = [];
 
-  String? _cachedText, _bufferLineText;
-  bool _bufferDirty = false, bufferNeedsRepaint = false, selectionOnly = false;
-
   /// Whether the search highlights have changed and need repaint.
   bool searchHighlightsChanged = false;
-
-  int _bufferLineRopeStart = 0, _bufferLineOriginalLength = 0;
-  int _cachedTextVersion = -1, _currentVersion = 0;
-  int? dirtyLine, _bufferLineIndex;
 
   /// Whether the editor is in read-only mode.
   ///
@@ -79,14 +85,10 @@ class CodeForgeController implements DeltaTextInputClient {
   /// Whether the line structure has changed (lines added or removed).
   bool lineStructureChanged = false;
 
-  String? _lastSentText;
-  TextSelection? _lastSentSelection;
-  UndoRedoController? _undoController;
-
-  // Fold operation callbacks - set by the render object
-  void Function(int lineNumber)? _toggleFoldCallback;
-  VoidCallback? _foldAllCallback;
-  VoidCallback? _unfoldAllCallback;
+  /// Callback to show Ai suggestion manually when the [AiCompletion.completionType] is [CompletionType.manual] or [CompletionType.mixed].
+  void getManualAiSuggestion() {
+    manualAiCompletion?.call();
+  }
 
   /// Sets the undo controller for this editor.
   ///
@@ -99,118 +101,259 @@ class CodeForgeController implements DeltaTextInputClient {
     }
   }
 
-  void _applyUndoRedoOperation(EditOperation operation) {
-    _flushBuffer();
+  /// Save the current content, [controller.text] to the opened file.
+  void saveFile(){
+    if(openedFile ==  null){
+      throw FlutterError(
+        "No file found.\nPlease open a file by providing a valid filePath to the CodeForge widget"
+      );
+    }
+    File(openedFile!).writeAsStringSync(text);
+  }
 
-    switch (operation) {
-      case InsertOperation(:final offset, :final text, :final selectionAfter):
-        _rope.insert(offset, text);
-        _currentVersion++;
-        _selection = selectionAfter;
-        dirtyLine = _rope.getLineAtOffset(offset);
-        if (text.contains('\n')) {
-          lineStructureChanged = true;
-        }
-        dirtyRegion = TextRange(start: offset, end: offset + text.length);
-
-      case DeleteOperation(:final offset, :final text, :final selectionAfter):
-        _rope.delete(offset, offset + text.length);
-        _currentVersion++;
-        _selection = selectionAfter;
-        dirtyLine = _rope.getLineAtOffset(offset);
-        if (text.contains('\n')) {
-          lineStructureChanged = true;
-        }
-        dirtyRegion = TextRange(start: offset, end: offset);
-
-      case ReplaceOperation(
-        :final offset,
-        :final deletedText,
-        :final insertedText,
-        :final selectionAfter,
-      ):
-        if (deletedText.isNotEmpty) {
-          _rope.delete(offset, offset + deletedText.length);
-        }
-        if (insertedText.isNotEmpty) {
-          _rope.insert(offset, insertedText);
-        }
-        _currentVersion++;
-        _selection = selectionAfter;
-        dirtyLine = _rope.getLineAtOffset(offset);
-        if (deletedText.contains('\n') || insertedText.contains('\n')) {
-          lineStructureChanged = true;
-        }
-        dirtyRegion = TextRange(
-          start: offset,
-          end: offset + insertedText.length,
-        );
-
-      case CompoundOperation(:final operations):
-        for (final op in operations) {
-          _applyUndoRedoOperation(op);
-        }
-        return;
+  /// Moves the cursor one character to the left.
+  ///
+  /// If [isShiftPressed] is true, extends the selection.
+  void pressLetfArrowKey({bool isShiftPressed = false}){
+    int newOffset;
+    if (!isShiftPressed && selection.start != selection.end) {
+      newOffset = selection.start;
+    } else if (selection.extentOffset > 0) {
+      newOffset = selection.extentOffset - 1;
+    } else {
+      newOffset = 0;
     }
 
-    _syncToConnection();
-    notifyListeners();
+    if (isShiftPressed) {
+      setSelectionSilently(
+        TextSelection(baseOffset: selection.baseOffset, extentOffset: newOffset),
+      );
+    } else {
+      setSelectionSilently(
+        TextSelection.collapsed(offset: newOffset),
+      );
+    }
   }
 
-  void _recordEdit(EditOperation operation) {
-    _undoController?.recordEdit(operation);
+  /// Moves the cursor one character to the right.
+  ///
+  /// If [isShiftPressed] is true, extends the selection.
+  void pressRightArrowKey({bool isShiftPressed = false}){
+    int newOffset;
+    if (!isShiftPressed && selection.start != selection.end) {
+      newOffset = selection.end;
+    } else if (selection.extentOffset < length) {
+      newOffset = selection.extentOffset + 1;
+    } else {
+      newOffset = length;
+    }
+
+    if (isShiftPressed) {
+      setSelectionSilently(
+        TextSelection(baseOffset: selection.baseOffset, extentOffset: newOffset),
+      );
+    } else {
+      setSelectionSilently(
+        TextSelection.collapsed(offset: newOffset),
+      );
+    }
   }
 
-  void _recordInsertion(
-    int offset,
-    String text,
-    TextSelection selBefore,
-    TextSelection selAfter,
-  ) {
-    if (_undoController?.isUndoRedoInProgress ?? false) return;
-    _recordEdit(
-      InsertOperation(
-        offset: offset,
-        text: text,
-        selectionBefore: selBefore,
-        selectionAfter: selAfter,
-      ),
-    );
+  /// Moves the cursor up one line, maintaining the column position.
+  ///
+  /// If [isShiftPressed] is true, extends the selection.
+  void pressUpArrowKey({bool isShiftPressed = false}){
+    final currentLine = getLineAtOffset(selection.extentOffset);
+
+    if (currentLine <= 0) {
+      if (isShiftPressed) {
+        setSelectionSilently(
+          TextSelection(baseOffset: selection.baseOffset, extentOffset: 0),
+        );
+      } else {
+        setSelectionSilently(
+          const TextSelection.collapsed(offset: 0),
+        );
+      }
+      return;
+    }
+
+    int targetLine = currentLine - 1;
+    while (targetLine > 0 && _isLineInFoldedRegion(targetLine)) {
+      targetLine--;
+    }
+
+    if (_isLineInFoldedRegion(targetLine)) {
+      targetLine = _getFoldStartForLine(targetLine) ?? 0;
+    }
+
+    final lineStart = getLineStartOffset(currentLine);
+    final column = selection.extentOffset - lineStart;
+    final prevLineStart = getLineStartOffset(targetLine);
+    final prevLineText = getLineText(targetLine);
+    final prevLineLength = prevLineText.length;
+    final newColumn = column.clamp(0, prevLineLength);
+    final newOffset = (prevLineStart + newColumn).clamp(0, length);
+
+    if (isShiftPressed) {
+      setSelectionSilently(
+        TextSelection(baseOffset: selection.baseOffset, extentOffset: newOffset),
+      );
+    } else {
+      setSelectionSilently(
+        TextSelection.collapsed(offset: newOffset),
+      );
+    }
+  }
+  
+  /// Moves the cursor down one line, maintaining the column position.
+  ///
+  /// If [isShiftPressed] is true, extends the selection.
+  void pressDownArrowKey({bool isShiftPressed = false}){
+    final currentLine = getLineAtOffset(selection.extentOffset);
+
+    if (currentLine >= lineCount - 1) {
+      final endOffset = length;
+      if (isShiftPressed) {
+        setSelectionSilently(
+          TextSelection(baseOffset: selection.baseOffset, extentOffset: endOffset),
+        );
+      } else {
+        setSelectionSilently(
+          TextSelection.collapsed(offset: endOffset),
+        );
+      }
+      return;
+    }
+
+    final foldAtCurrent = _getFoldRangeAtCurrentLine(currentLine);
+    int targetLine;
+    if (foldAtCurrent != null && foldAtCurrent.isFolded) {
+      targetLine = foldAtCurrent.endIndex + 1;
+    } else {
+      targetLine = currentLine + 1;
+    }
+
+    while (targetLine < lineCount && _isLineInFoldedRegion(targetLine)) {
+      final foldStart = _getFoldStartForLine(targetLine);
+      if (foldStart != null) {
+        final fold = foldings.firstWhere(
+          (f) => f.startIndex == foldStart && f.isFolded,
+          orElse: () => FoldRange(targetLine, targetLine),
+        );
+        targetLine = fold.endIndex + 1;
+      } else {
+        targetLine++;
+      }
+    }
+
+    if (targetLine >= lineCount) {
+      final endOffset = length;
+      if (isShiftPressed) {
+        setSelectionSilently(
+          TextSelection(baseOffset: selection.baseOffset, extentOffset: endOffset),
+        );
+      } else {
+        setSelectionSilently(
+          TextSelection.collapsed(offset: endOffset),
+        );
+      }
+      return;
+    }
+
+    final lineStart = getLineStartOffset(currentLine);
+    final column = selection.extentOffset - lineStart;
+    final nextLineStart = getLineStartOffset(targetLine);
+    final nextLineText = getLineText(targetLine);
+    final nextLineLength = nextLineText.length;
+    final newColumn = column.clamp(0, nextLineLength);
+    final newOffset = (nextLineStart + newColumn).clamp(0, length);
+
+    if (isShiftPressed) {
+      setSelectionSilently(
+        TextSelection(baseOffset: selection.baseOffset, extentOffset: newOffset),
+      );
+    } else {
+      setSelectionSilently(
+        TextSelection.collapsed(offset: newOffset),
+      );
+    }
   }
 
-  void _recordDeletion(
-    int offset,
-    String text,
-    TextSelection selBefore,
-    TextSelection selAfter,
-  ) {
-    if (_undoController?.isUndoRedoInProgress ?? false) return;
-    _recordEdit(
-      DeleteOperation(
-        offset: offset,
-        text: text,
-        selectionBefore: selBefore,
-        selectionAfter: selAfter,
-      ),
-    );
+  /// Moves the cursor to the beginning of the current line.
+  ///
+  /// If [isShiftPressed] is true, extends the selection to the line start.
+  void pressHomeKey({bool isShiftPressed = false}) {
+    final currentLine = getLineAtOffset(selection.extentOffset);
+    final lineStart = getLineStartOffset(currentLine);
+
+    if (isShiftPressed) {
+      setSelectionSilently(
+        TextSelection(baseOffset: selection.baseOffset, extentOffset: lineStart),
+      );
+    } else {
+      setSelectionSilently(
+        TextSelection.collapsed(offset: lineStart),
+      );
+    }
   }
 
-  void _recordReplacement(
-    int offset,
-    String deleted,
-    String inserted,
-    TextSelection selBefore,
-    TextSelection selAfter,
-  ) {
-    if (_undoController?.isUndoRedoInProgress ?? false) return;
-    _recordEdit(
-      ReplaceOperation(
-        offset: offset,
-        deletedText: deleted,
-        insertedText: inserted,
-        selectionBefore: selBefore,
-        selectionAfter: selAfter,
-      ),
+  /// Moves the cursor to the end of the current line.
+  ///
+  /// If [isShiftPressed] is true, extends the selection to the line end.
+  void pressEndKey({bool isShiftPressed = false}){
+    final currentLine = getLineAtOffset(selection.extentOffset);
+    final lineText = getLineText(currentLine);
+    final lineStart = getLineStartOffset(currentLine);
+    final lineEnd = lineStart + lineText.length;
+
+    if (isShiftPressed) {
+      setSelectionSilently(
+        TextSelection(baseOffset: selection.baseOffset, extentOffset: lineEnd),
+      );
+    } else {
+      setSelectionSilently(
+        TextSelection.collapsed(offset: lineEnd),
+      );
+    }
+  }
+
+  /// Copies the currently selected text to the clipboard.
+  ///
+  /// If no text is selected, does nothing.
+  void copy() {
+    final sel = selection;
+    if (sel.start == sel.end) return;
+    final selectedText = text.substring(sel.start, sel.end);
+    Clipboard.setData(ClipboardData(text: selectedText));
+  }
+
+  /// Cuts the currently selected text to the clipboard.
+  ///
+  /// If no text is selected, does nothing.
+  void cut() {
+    final sel = selection;
+    if (sel.start == sel.end) return;
+    final selectedText = text.substring(sel.start, sel.end);
+    Clipboard.setData(ClipboardData(text: selectedText));
+    replaceRange(sel.start, sel.end, '');
+  }
+
+  /// Pastes text from the clipboard at the current cursor position.
+  ///
+  /// Replaces any selected text with the pasted content.
+  Future<void> paste() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data?.text == null || data!.text!.isEmpty) return;
+    final sel = selection;
+    replaceRange(sel.start, sel.end, data.text!);
+  }
+
+  /// Selects all text in the editor.
+  void selectAll() {
+    selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: length,
     );
   }
 
@@ -448,6 +591,538 @@ class CodeForgeController implements DeltaTextInputClient {
       }
     }
     notifyListeners();
+  }
+
+  bool get isBufferActive => _bufferLineIndex != null && _bufferDirty;
+  int? get bufferLineIndex => _bufferLineIndex;
+  int get bufferLineRopeStart => _bufferLineRopeStart;
+  String? get bufferLineText => _bufferLineText;
+
+  int get bufferCursorColumn {
+    if (!isBufferActive) return 0;
+    return _selection.extentOffset - _bufferLineRopeStart;
+  }
+
+  /// Insert text at the current cursor position (or replace selection).
+  void insertAtCurrentCursor(
+    String textToInsert, {
+    bool replaceTypedChar = false,
+  }) {
+    _flushBuffer();
+
+    final cursorPosition = selection.extentOffset;
+    final safePosition = cursorPosition.clamp(0, _rope.length);
+    final currentLine = _rope.getLineAtOffset(safePosition);
+    final isFolded = foldings.any(
+      (fold) =>
+          fold.isFolded &&
+          currentLine > fold.startIndex &&
+          currentLine <= fold.endIndex,
+    );
+
+    if (isFolded) {
+      final newPosition = visibleText.length;
+      selection = TextSelection.collapsed(offset: newPosition);
+      return;
+    }
+
+    if (replaceTypedChar) {
+      final ropeText = _rope.getText();
+      final prefix = _getCurrentWordPrefix(ropeText, safePosition);
+      final prefixStart = (safePosition - prefix.length).clamp(0, _rope.length);
+
+      replaceRange(prefixStart, safePosition, textToInsert);
+    } else {
+      replaceRange(safePosition, safePosition, textToInsert);
+    }
+  }
+
+  void _syncToConnection() {
+    if (connection != null && connection!.attached) {
+      final currentText = text;
+      _lastSentText = currentText;
+      _lastSentSelection = _selection;
+      connection!.setEditingState(
+        TextEditingValue(text: currentText, selection: _selection),
+      );
+    }
+  }
+
+  /// Remove the selection or last char if the selection is empty (backspace key)
+  void backspace() {
+    if (_undoController?.isUndoRedoInProgress ?? false) return;
+
+    _flushBuffer();
+
+    final selectionBefore = _selection;
+    final sel = _selection;
+    String deletedText;
+
+    if (sel.start < sel.end) {
+      deletedText = _rope.substring(sel.start, sel.end);
+      _rope.delete(sel.start, sel.end);
+      _currentVersion++;
+      _selection = TextSelection.collapsed(offset: sel.start);
+      dirtyLine = _rope.getLineAtOffset(sel.start);
+
+      _recordDeletion(sel.start, deletedText, selectionBefore, _selection);
+    } else if (sel.start > 0) {
+      deletedText = _rope.charAt(sel.start - 1);
+      _rope.delete(sel.start - 1, sel.start);
+      _currentVersion++;
+      _selection = TextSelection.collapsed(offset: sel.start - 1);
+      dirtyLine = _rope.getLineAtOffset(sel.start - 1);
+
+      _recordDeletion(sel.start - 1, deletedText, selectionBefore, _selection);
+    } else {
+      return;
+    }
+
+    _syncToConnection();
+    notifyListeners();
+  }
+
+  /// Remove the selection or the char at cursor position (delete key)
+  void delete() {
+    if (_undoController?.isUndoRedoInProgress ?? false) return;
+
+    _flushBuffer();
+
+    final selectionBefore = _selection;
+    final sel = _selection;
+    final textLen = _rope.length;
+    String deletedText;
+
+    if (sel.start < sel.end) {
+      deletedText = _rope.substring(sel.start, sel.end);
+      _rope.delete(sel.start, sel.end);
+      _currentVersion++;
+      _selection = TextSelection.collapsed(offset: sel.start);
+      dirtyLine = _rope.getLineAtOffset(sel.start);
+
+      _recordDeletion(sel.start, deletedText, selectionBefore, _selection);
+    } else if (sel.start < textLen) {
+      deletedText = _rope.charAt(sel.start);
+      _rope.delete(sel.start, sel.start + 1);
+      _currentVersion++;
+      dirtyLine = _rope.getLineAtOffset(sel.start);
+
+      _recordDeletion(sel.start, deletedText, selectionBefore, _selection);
+    } else {
+      return;
+    }
+
+    _syncToConnection();
+    notifyListeners();
+  }
+
+  @override
+  void connectionClosed() {
+    connection = null;
+  }
+
+  @override
+  AutofillScope? get currentAutofillScope => null;
+
+  @override
+  TextEditingValue? get currentTextEditingValue =>
+      TextEditingValue(text: text, selection: _selection);
+
+  @override
+  void didChangeInputControl(
+    TextInputControl? oldControl,
+    TextInputControl? newControl,
+  ) {}
+  @override
+  void insertContent(KeyboardInsertedContent content) {}
+  @override
+  void insertTextPlaceholder(Size size) {}
+  @override
+  void performAction(TextInputAction action) {}
+  @override
+  void performPrivateCommand(String action, Map<String, dynamic> data) {}
+  @override
+  void performSelector(String selectorName) {}
+  @override
+  void removeTextPlaceholder() {}
+  @override
+  void showAutocorrectionPromptRect(int start, int end) {}
+  @override
+  void showToolbar() {}
+  @override
+  void updateEditingValue(TextEditingValue value) {}
+  @override
+  void updateFloatingCursor(RawFloatingCursorPoint point) {}
+
+  /// Replace a range of text with new text.
+  /// Used for clipboard operations and text manipulation.
+  void replaceRange(int start, int end, String replacement) {
+    if (_undoController?.isUndoRedoInProgress ?? false) return;
+
+    final selectionBefore = _selection;
+    _flushBuffer();
+    final safeStart = start.clamp(0, _rope.length);
+    final safeEnd = end.clamp(safeStart, _rope.length);
+    final deletedText = safeStart < safeEnd
+        ? _rope.substring(safeStart, safeEnd)
+        : '';
+
+    if (safeStart < safeEnd) {
+      _rope.delete(safeStart, safeEnd);
+    }
+    if (replacement.isNotEmpty) {
+      _rope.insert(safeStart, replacement);
+    }
+    _currentVersion++;
+    _selection = TextSelection.collapsed(
+      offset: safeStart + replacement.length,
+    );
+    dirtyLine = _rope.getLineAtOffset(safeStart);
+    dirtyRegion = TextRange(
+      start: safeStart,
+      end: safeStart + replacement.length,
+    );
+
+    if (deletedText.isNotEmpty && replacement.isNotEmpty) {
+      _recordReplacement(
+        safeStart,
+        deletedText,
+        replacement,
+        selectionBefore,
+        _selection,
+      );
+    } else if (deletedText.isNotEmpty) {
+      _recordDeletion(safeStart, deletedText, selectionBefore, _selection);
+    } else if (replacement.isNotEmpty) {
+      _recordInsertion(safeStart, replacement, selectionBefore, _selection);
+    }
+
+    if (connection != null && connection!.attached) {
+      _lastSentText = text;
+      _lastSentSelection = _selection;
+      connection!.setEditingState(
+        TextEditingValue(text: _lastSentText!, selection: _selection),
+      );
+    }
+
+    notifyListeners();
+  }
+
+  void findWord(
+    String word, {
+    TextStyle? highlightStyle,
+    bool matchCase = false,
+    bool matchWholeWord = false,
+  }) {
+    final style =
+        highlightStyle ?? const TextStyle(backgroundColor: Colors.amberAccent);
+
+    searchHighlights.clear();
+
+    if (word.isEmpty) {
+      searchHighlightsChanged = true;
+      notifyListeners();
+      return;
+    }
+
+    final searchText = text;
+    final searchWord = matchCase ? word : word.toLowerCase();
+    final textToSearch = matchCase ? searchText : searchText.toLowerCase();
+
+    int offset = 0;
+    while (offset < textToSearch.length) {
+      final index = textToSearch.indexOf(searchWord, offset);
+      if (index == -1) break;
+
+      bool isMatch = true;
+
+      if (matchWholeWord) {
+        final before = index > 0 ? searchText[index - 1] : '';
+        final after = index + word.length < searchText.length
+            ? searchText[index + word.length]
+            : '';
+
+        final isWordChar = RegExp(r'\w');
+        final beforeIsWord = before.isNotEmpty && isWordChar.hasMatch(before);
+        final afterIsWord = after.isNotEmpty && isWordChar.hasMatch(after);
+
+        if (beforeIsWord || afterIsWord) {
+          isMatch = false;
+        }
+      }
+
+      if (isMatch) {
+        searchHighlights.add(
+          SearchHighlight(start: index, end: index + word.length, style: style),
+        );
+      }
+
+      offset = index + 1;
+    }
+
+    searchHighlightsChanged = true;
+    notifyListeners();
+  }
+
+  void findRegex(RegExp regex, TextStyle? highlightStyle) {
+    final style =
+        highlightStyle ?? const TextStyle(backgroundColor: Colors.amberAccent);
+
+    searchHighlights.clear();
+
+    final searchText = text;
+    final matches = regex.allMatches(searchText);
+
+    for (final match in matches) {
+      searchHighlights.add(
+        SearchHighlight(start: match.start, end: match.end, style: style),
+      );
+    }
+
+    searchHighlightsChanged = true;
+    notifyListeners();
+  }
+
+  /// Clear all search highlights
+  void clearSearchHighlights() {
+    searchHighlights.clear();
+    searchHighlightsChanged = true;
+    notifyListeners();
+  }
+
+  /// Set fold operation callbacks - called by the render object
+  void setFoldCallbacks({
+    void Function(int lineNumber)? toggleFold,
+    VoidCallback? foldAll,
+    VoidCallback? unfoldAll,
+  }) {
+    _toggleFoldCallback = toggleFold;
+    _foldAllCallback = foldAll;
+    _unfoldAllCallback = unfoldAll;
+  }
+
+  /// Toggles the fold state at the specified line number.
+  ///
+  /// [lineNumber] is zero-indexed (0 for the first line).
+  /// If the line is at the start of a fold region, it will be toggled.
+  ///
+  /// Throws [StateError] if:
+  /// - Folding is not enabled on the editor
+  /// - The editor has not been initialized
+  /// - No fold range exists at the specified line
+  ///
+  /// Example:
+  /// ```dart
+  /// controller.toggleFold(5); // Toggle fold at line 6
+  /// ```
+  void toggleFold(int lineNumber) {
+    if (_toggleFoldCallback == null) {
+      throw StateError('Folding is not enabled or editor is not initialized');
+    }
+    _toggleFoldCallback!(lineNumber);
+  }
+
+  /// Folds all foldable regions in the document.
+  ///
+  /// All detected fold ranges will be collapsed, hiding their contents.
+  ///
+  /// Throws [StateError] if folding is not enabled or editor is not initialized.
+  ///
+  /// Example:
+  /// ```dart
+  /// controller.foldAll();
+  /// ```
+  void foldAll() {
+    if (_foldAllCallback == null) {
+      throw StateError('Folding is not enabled or editor is not initialized');
+    }
+    _foldAllCallback!();
+  }
+
+  /// Unfolds all folded regions in the document.
+  ///
+  /// All collapsed fold ranges will be expanded, showing their contents.
+  ///
+  /// Throws [StateError] if folding is not enabled or editor is not initialized.
+  ///
+  /// Example:
+  /// ```dart
+  /// controller.unfoldAll();
+  /// ```
+  void unfoldAll() {
+    if (_unfoldAllCallback == null) {
+      throw StateError('Folding is not enabled or editor is not initialized');
+    }
+    _unfoldAllCallback!();
+  }
+
+  /// Disposes of the controller and releases resources.
+  ///
+  /// Call this method when the controller is no longer needed to prevent
+  /// memory leaks.
+  void dispose() {
+    _listeners.clear();
+    connection?.close();
+  }
+
+  void _applyUndoRedoOperation(EditOperation operation) {
+    _flushBuffer();
+
+    switch (operation) {
+      case InsertOperation(:final offset, :final text, :final selectionAfter):
+        _rope.insert(offset, text);
+        _currentVersion++;
+        _selection = selectionAfter;
+        dirtyLine = _rope.getLineAtOffset(offset);
+        if (text.contains('\n')) {
+          lineStructureChanged = true;
+        }
+        dirtyRegion = TextRange(start: offset, end: offset + text.length);
+
+      case DeleteOperation(:final offset, :final text, :final selectionAfter):
+        _rope.delete(offset, offset + text.length);
+        _currentVersion++;
+        _selection = selectionAfter;
+        dirtyLine = _rope.getLineAtOffset(offset);
+        if (text.contains('\n')) {
+          lineStructureChanged = true;
+        }
+        dirtyRegion = TextRange(start: offset, end: offset);
+
+      case ReplaceOperation(
+        :final offset,
+        :final deletedText,
+        :final insertedText,
+        :final selectionAfter,
+      ):
+        if (deletedText.isNotEmpty) {
+          _rope.delete(offset, offset + deletedText.length);
+        }
+        if (insertedText.isNotEmpty) {
+          _rope.insert(offset, insertedText);
+        }
+        _currentVersion++;
+        _selection = selectionAfter;
+        dirtyLine = _rope.getLineAtOffset(offset);
+        if (deletedText.contains('\n') || insertedText.contains('\n')) {
+          lineStructureChanged = true;
+        }
+        dirtyRegion = TextRange(
+          start: offset,
+          end: offset + insertedText.length,
+        );
+
+      case CompoundOperation(:final operations):
+        for (final op in operations) {
+          _applyUndoRedoOperation(op);
+        }
+        return;
+    }
+
+    _syncToConnection();
+    notifyListeners();
+  }
+
+  void _recordEdit(EditOperation operation) {
+    _undoController?.recordEdit(operation);
+  }
+
+  void _recordInsertion(
+    int offset,
+    String text,
+    TextSelection selBefore,
+    TextSelection selAfter,
+  ) {
+    if (_undoController?.isUndoRedoInProgress ?? false) return;
+    _recordEdit(
+      InsertOperation(
+        offset: offset,
+        text: text,
+        selectionBefore: selBefore,
+        selectionAfter: selAfter,
+      ),
+    );
+  }
+
+  void _recordDeletion(
+    int offset,
+    String text,
+    TextSelection selBefore,
+    TextSelection selAfter,
+  ) {
+    if (_undoController?.isUndoRedoInProgress ?? false) return;
+    _recordEdit(
+      DeleteOperation(
+        offset: offset,
+        text: text,
+        selectionBefore: selBefore,
+        selectionAfter: selAfter,
+      ),
+    );
+  }
+
+  void _recordReplacement(
+    int offset,
+    String deleted,
+    String inserted,
+    TextSelection selBefore,
+    TextSelection selAfter,
+  ) {
+    if (_undoController?.isUndoRedoInProgress ?? false) return;
+    _recordEdit(
+      ReplaceOperation(
+        offset: offset,
+        deletedText: deleted,
+        insertedText: inserted,
+        selectionBefore: selBefore,
+        selectionAfter: selAfter,
+      ),
+    );
+  }
+
+  void _scheduleFlush() {
+    _flushTimer?.cancel();
+    _flushTimer = Timer(_flushDelay, _flushBuffer);
+  }
+
+  void _flushBuffer() {
+    _flushTimer?.cancel();
+    _flushTimer = null;
+
+    if (_bufferLineIndex == null || !_bufferDirty) return;
+
+    final lineToInvalidate = _bufferLineIndex!;
+
+    final start = _bufferLineRopeStart;
+    final end = start + _bufferLineOriginalLength;
+
+    if (_bufferLineOriginalLength > 0) {
+      _rope.delete(start, end);
+    }
+    if (_bufferLineText!.isNotEmpty) {
+      _rope.insert(start, _bufferLineText!);
+    }
+
+    _bufferLineIndex = null;
+    _bufferLineText = null;
+    _bufferDirty = false;
+
+    dirtyLine = lineToInvalidate;
+    notifyListeners();
+  }
+
+  String _getCurrentWordPrefix(String text, int offset) {
+    final safeOffset = offset.clamp(0, text.length);
+    final beforeCursor = text.substring(0, safeOffset);
+    final match = RegExp(r'([a-zA-Z_][a-zA-Z0-9_]*)$').firstMatch(beforeCursor);
+    return match?.group(0) ?? '';
+  }
+
+  void clearDirtyRegion() {
+    dirtyRegion = null;
+    dirtyLine = null;
+    lineStructureChanged = false;
+    searchHighlightsChanged = false;
   }
 
   void _handleInsertion(
@@ -839,420 +1514,32 @@ class CodeForgeController implements DeltaTextInputClient {
     _bufferDirty = false;
   }
 
-  bool get isBufferActive => _bufferLineIndex != null && _bufferDirty;
-  int? get bufferLineIndex => _bufferLineIndex;
-  int get bufferLineRopeStart => _bufferLineRopeStart;
-  String? get bufferLineText => _bufferLineText;
-
-  int get bufferCursorColumn {
-    if (!isBufferActive) return 0;
-    return _selection.extentOffset - _bufferLineRopeStart;
-  }
-
-  void _scheduleFlush() {
-    _flushTimer?.cancel();
-    _flushTimer = Timer(_flushDelay, _flushBuffer);
-  }
-
-  void _flushBuffer() {
-    _flushTimer?.cancel();
-    _flushTimer = null;
-
-    if (_bufferLineIndex == null || !_bufferDirty) return;
-
-    final lineToInvalidate = _bufferLineIndex!;
-
-    final start = _bufferLineRopeStart;
-    final end = start + _bufferLineOriginalLength;
-
-    if (_bufferLineOriginalLength > 0) {
-      _rope.delete(start, end);
-    }
-    if (_bufferLineText!.isNotEmpty) {
-      _rope.insert(start, _bufferLineText!);
-    }
-
-    _bufferLineIndex = null;
-    _bufferLineText = null;
-    _bufferDirty = false;
-
-    dirtyLine = lineToInvalidate;
-    notifyListeners();
-  }
-
-  String _getCurrentWordPrefix(String text, int offset) {
-    final safeOffset = offset.clamp(0, text.length);
-    final beforeCursor = text.substring(0, safeOffset);
-    final match = RegExp(r'([a-zA-Z_][a-zA-Z0-9_]*)$').firstMatch(beforeCursor);
-    return match?.group(0) ?? '';
-  }
-
-  void clearDirtyRegion() {
-    dirtyRegion = null;
-    dirtyLine = null;
-    lineStructureChanged = false;
-    searchHighlightsChanged = false;
-  }
-
-  /// Insert text at the current cursor position (or replace selection).
-  void insertAtCurrentCursor(
-    String textToInsert, {
-    bool replaceTypedChar = false,
-  }) {
-    _flushBuffer();
-
-    final cursorPosition = selection.extentOffset;
-    final safePosition = cursorPosition.clamp(0, _rope.length);
-    final currentLine = _rope.getLineAtOffset(safePosition);
-    final isFolded = foldings.any(
+  bool _isLineInFoldedRegion(int lineIndex) {
+    return foldings.any(
       (fold) =>
           fold.isFolded &&
-          currentLine > fold.startIndex &&
-          currentLine <= fold.endIndex,
+          lineIndex > fold.startIndex &&
+          lineIndex <= fold.endIndex,
     );
-
-    if (isFolded) {
-      final newPosition = visibleText.length;
-      selection = TextSelection.collapsed(offset: newPosition);
-      return;
-    }
-
-    if (replaceTypedChar) {
-      final ropeText = _rope.getText();
-      final prefix = _getCurrentWordPrefix(ropeText, safePosition);
-      final prefixStart = (safePosition - prefix.length).clamp(0, _rope.length);
-
-      replaceRange(prefixStart, safePosition, textToInsert);
-    } else {
-      replaceRange(safePosition, safePosition, textToInsert);
-    }
   }
 
-  void _syncToConnection() {
-    if (connection != null && connection!.attached) {
-      final currentText = text;
-      _lastSentText = currentText;
-      _lastSentSelection = _selection;
-      connection!.setEditingState(
-        TextEditingValue(text: currentText, selection: _selection),
-      );
-    }
-  }
-
-  /// Remove the selection or last char if the selection is empty (backspace key)
-  void backspace() {
-    if (_undoController?.isUndoRedoInProgress ?? false) return;
-
-    _flushBuffer();
-
-    final selectionBefore = _selection;
-    final sel = _selection;
-    String deletedText;
-
-    if (sel.start < sel.end) {
-      deletedText = _rope.substring(sel.start, sel.end);
-      _rope.delete(sel.start, sel.end);
-      _currentVersion++;
-      _selection = TextSelection.collapsed(offset: sel.start);
-      dirtyLine = _rope.getLineAtOffset(sel.start);
-
-      _recordDeletion(sel.start, deletedText, selectionBefore, _selection);
-    } else if (sel.start > 0) {
-      deletedText = _rope.charAt(sel.start - 1);
-      _rope.delete(sel.start - 1, sel.start);
-      _currentVersion++;
-      _selection = TextSelection.collapsed(offset: sel.start - 1);
-      dirtyLine = _rope.getLineAtOffset(sel.start - 1);
-
-      _recordDeletion(sel.start - 1, deletedText, selectionBefore, _selection);
-    } else {
-      return;
-    }
-
-    _syncToConnection();
-    notifyListeners();
-  }
-
-  /// Remove the selection or the char at cursor position (delete key)
-  void delete() {
-    if (_undoController?.isUndoRedoInProgress ?? false) return;
-
-    _flushBuffer();
-
-    final selectionBefore = _selection;
-    final sel = _selection;
-    final textLen = _rope.length;
-    String deletedText;
-
-    if (sel.start < sel.end) {
-      deletedText = _rope.substring(sel.start, sel.end);
-      _rope.delete(sel.start, sel.end);
-      _currentVersion++;
-      _selection = TextSelection.collapsed(offset: sel.start);
-      dirtyLine = _rope.getLineAtOffset(sel.start);
-
-      _recordDeletion(sel.start, deletedText, selectionBefore, _selection);
-    } else if (sel.start < textLen) {
-      deletedText = _rope.charAt(sel.start);
-      _rope.delete(sel.start, sel.start + 1);
-      _currentVersion++;
-      dirtyLine = _rope.getLineAtOffset(sel.start);
-
-      _recordDeletion(sel.start, deletedText, selectionBefore, _selection);
-    } else {
-      return;
-    }
-
-    _syncToConnection();
-    notifyListeners();
-  }
-
-  @override
-  void connectionClosed() {
-    connection = null;
-  }
-
-  @override
-  AutofillScope? get currentAutofillScope => null;
-
-  @override
-  TextEditingValue? get currentTextEditingValue =>
-      TextEditingValue(text: text, selection: _selection);
-
-  @override
-  void didChangeInputControl(
-    TextInputControl? oldControl,
-    TextInputControl? newControl,
-  ) {}
-  @override
-  void insertContent(KeyboardInsertedContent content) {}
-  @override
-  void insertTextPlaceholder(Size size) {}
-  @override
-  void performAction(TextInputAction action) {}
-  @override
-  void performPrivateCommand(String action, Map<String, dynamic> data) {}
-  @override
-  void performSelector(String selectorName) {}
-  @override
-  void removeTextPlaceholder() {}
-  @override
-  void showAutocorrectionPromptRect(int start, int end) {}
-  @override
-  void showToolbar() {}
-  @override
-  void updateEditingValue(TextEditingValue value) {}
-  @override
-  void updateFloatingCursor(RawFloatingCursorPoint point) {}
-
-  /// Replace a range of text with new text.
-  /// Used for clipboard operations and text manipulation.
-  void replaceRange(int start, int end, String replacement) {
-    if (_undoController?.isUndoRedoInProgress ?? false) return;
-
-    final selectionBefore = _selection;
-    _flushBuffer();
-    final safeStart = start.clamp(0, _rope.length);
-    final safeEnd = end.clamp(safeStart, _rope.length);
-    final deletedText = safeStart < safeEnd
-        ? _rope.substring(safeStart, safeEnd)
-        : '';
-
-    if (safeStart < safeEnd) {
-      _rope.delete(safeStart, safeEnd);
-    }
-    if (replacement.isNotEmpty) {
-      _rope.insert(safeStart, replacement);
-    }
-    _currentVersion++;
-    _selection = TextSelection.collapsed(
-      offset: safeStart + replacement.length,
-    );
-    dirtyLine = _rope.getLineAtOffset(safeStart);
-    dirtyRegion = TextRange(
-      start: safeStart,
-      end: safeStart + replacement.length,
-    );
-
-    if (deletedText.isNotEmpty && replacement.isNotEmpty) {
-      _recordReplacement(
-        safeStart,
-        deletedText,
-        replacement,
-        selectionBefore,
-        _selection,
-      );
-    } else if (deletedText.isNotEmpty) {
-      _recordDeletion(safeStart, deletedText, selectionBefore, _selection);
-    } else if (replacement.isNotEmpty) {
-      _recordInsertion(safeStart, replacement, selectionBefore, _selection);
-    }
-
-    if (connection != null && connection!.attached) {
-      _lastSentText = text;
-      _lastSentSelection = _selection;
-      connection!.setEditingState(
-        TextEditingValue(text: _lastSentText!, selection: _selection),
-      );
-    }
-
-    notifyListeners();
-  }
-
-  void findWord(
-    String word, {
-    TextStyle? highlightStyle,
-    bool matchCase = false,
-    bool matchWholeWord = false,
-  }) {
-    final style =
-        highlightStyle ?? const TextStyle(backgroundColor: Colors.amberAccent);
-
-    searchHighlights.clear();
-
-    if (word.isEmpty) {
-      searchHighlightsChanged = true;
-      notifyListeners();
-      return;
-    }
-
-    final searchText = text;
-    final searchWord = matchCase ? word : word.toLowerCase();
-    final textToSearch = matchCase ? searchText : searchText.toLowerCase();
-
-    int offset = 0;
-    while (offset < textToSearch.length) {
-      final index = textToSearch.indexOf(searchWord, offset);
-      if (index == -1) break;
-
-      bool isMatch = true;
-
-      if (matchWholeWord) {
-        final before = index > 0 ? searchText[index - 1] : '';
-        final after = index + word.length < searchText.length
-            ? searchText[index + word.length]
-            : '';
-
-        final isWordChar = RegExp(r'\w');
-        final beforeIsWord = before.isNotEmpty && isWordChar.hasMatch(before);
-        final afterIsWord = after.isNotEmpty && isWordChar.hasMatch(after);
-
-        if (beforeIsWord || afterIsWord) {
-          isMatch = false;
-        }
+  int? _getFoldStartForLine(int lineIndex) {
+    for (final fold in foldings) {
+      if (fold.isFolded &&
+          lineIndex > fold.startIndex &&
+          lineIndex <= fold.endIndex) {
+        return fold.startIndex;
       }
-
-      if (isMatch) {
-        searchHighlights.add(
-          SearchHighlight(start: index, end: index + word.length, style: style),
-        );
-      }
-
-      offset = index + 1;
     }
-
-    searchHighlightsChanged = true;
-    notifyListeners();
+    return null;
   }
 
-  void findRegex(RegExp regex, TextStyle? highlightStyle) {
-    final style =
-        highlightStyle ?? const TextStyle(backgroundColor: Colors.amberAccent);
-
-    searchHighlights.clear();
-
-    final searchText = text;
-    final matches = regex.allMatches(searchText);
-
-    for (final match in matches) {
-      searchHighlights.add(
-        SearchHighlight(start: match.start, end: match.end, style: style),
-      );
+  FoldRange? _getFoldRangeAtCurrentLine(int lineIndex) {
+    try {
+      return foldings.firstWhere((f) => f.startIndex == lineIndex);
+    } catch (_) {
+      return null;
     }
-
-    searchHighlightsChanged = true;
-    notifyListeners();
-  }
-
-  /// Clear all search highlights
-  void clearSearchHighlights() {
-    searchHighlights.clear();
-    searchHighlightsChanged = true;
-    notifyListeners();
-  }
-
-  /// Set fold operation callbacks - called by the render object
-  void setFoldCallbacks({
-    void Function(int lineNumber)? toggleFold,
-    VoidCallback? foldAll,
-    VoidCallback? unfoldAll,
-  }) {
-    _toggleFoldCallback = toggleFold;
-    _foldAllCallback = foldAll;
-    _unfoldAllCallback = unfoldAll;
-  }
-
-  /// Toggles the fold state at the specified line number.
-  ///
-  /// [lineNumber] is zero-indexed (0 for the first line).
-  /// If the line is at the start of a fold region, it will be toggled.
-  ///
-  /// Throws [StateError] if:
-  /// - Folding is not enabled on the editor
-  /// - The editor has not been initialized
-  /// - No fold range exists at the specified line
-  ///
-  /// Example:
-  /// ```dart
-  /// controller.toggleFold(5); // Toggle fold at line 6
-  /// ```
-  void toggleFold(int lineNumber) {
-    if (_toggleFoldCallback == null) {
-      throw StateError('Folding is not enabled or editor is not initialized');
-    }
-    _toggleFoldCallback!(lineNumber);
-  }
-
-  /// Folds all foldable regions in the document.
-  ///
-  /// All detected fold ranges will be collapsed, hiding their contents.
-  ///
-  /// Throws [StateError] if folding is not enabled or editor is not initialized.
-  ///
-  /// Example:
-  /// ```dart
-  /// controller.foldAll();
-  /// ```
-  void foldAll() {
-    if (_foldAllCallback == null) {
-      throw StateError('Folding is not enabled or editor is not initialized');
-    }
-    _foldAllCallback!();
-  }
-
-  /// Unfolds all folded regions in the document.
-  ///
-  /// All collapsed fold ranges will be expanded, showing their contents.
-  ///
-  /// Throws [StateError] if folding is not enabled or editor is not initialized.
-  ///
-  /// Example:
-  /// ```dart
-  /// controller.unfoldAll();
-  /// ```
-  void unfoldAll() {
-    if (_unfoldAllCallback == null) {
-      throw StateError('Folding is not enabled or editor is not initialized');
-    }
-    _unfoldAllCallback!();
-  }
-
-  /// Disposes of the controller and releases resources.
-  ///
-  /// Call this method when the controller is no longer needed to prevent
-  /// memory leaks.
-  void dispose() {
-    _listeners.clear();
-    connection?.close();
   }
 }
+
