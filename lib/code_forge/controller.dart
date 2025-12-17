@@ -49,9 +49,7 @@ class CodeForgeController implements DeltaTextInputClient {
   /// Currently opened file.
   String? openedFile;
 
-  /// Callback for manually triggering AI completion.
-  /// Set this to enable custom AI completion triggers.
-  VoidCallback? manualAiCompletion;
+  VoidCallback? manualAiCompletion, userCodeAction;
 
   Rope _rope = Rope('');
   TextSelection _selection = const TextSelection.collapsed(offset: 0);
@@ -88,6 +86,11 @@ class CodeForgeController implements DeltaTextInputClient {
   /// Callback to show Ai suggestion manually when the [AiCompletion.completionType] is [CompletionType.manual] or [CompletionType.mixed].
   void getManualAiSuggestion() {
     manualAiCompletion?.call();
+  }
+
+  /// Callback to get the LSP code action at the current cursor position
+  void getCodeAction(){
+    userCodeAction?.call();
   }
 
   /// Sets the undo controller for this editor.

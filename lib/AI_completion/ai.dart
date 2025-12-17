@@ -9,7 +9,7 @@ import 'package:http/http.dart' as http;
 ///
 /// ```dart
 ///import 'package:flutter/material.dart';
-///import 'package:code_crafter/code_crafter.dart';
+///import 'package:code_forge/code_forge.dart';
 ///
 ///final aiCompletion = AiCompletion(
 ///    model: Gemini(
@@ -18,10 +18,10 @@ import 'package:http/http.dart' as http;
 ///)
 ///```
 ///
-///Then pass the `aiCompletion` instance to the `CodeCrafter` widget:
+///Then pass the `aiCompletion` instance to the `CodeForge` widget:
 ///
 ///```dart
-///CodeCrafter(
+///CodeForge(
 ///    controller: controller,
 ///    theme: anOldHopeTheme,
 ///    aiCompletion: aiCompletion, // Pass the AI completion instance here
@@ -69,7 +69,12 @@ sealed class Models {
 
   @protected
   final String instruction =
-      "You are a code completion engine. Given the provided code where the cursor is represented by the placeholder '<|CURSOR|>', generate only the code that should be inserted at that position. Do not include the placeholder or any explanations. Return only the code to insert.";
+    "You are a code completion engine. "
+    "The input contains partial code context split into sections, with the exact insertion point marked by the placeholder '<|CURSOR|>'. "
+    "Using only the provided context, generate the code that should be inserted at the cursor position. "
+    "Do not repeat the placeholder, do not include explanations, comments, formatting markers, or surrounding context. "
+    "Return only the code to insert.";
+
 
   Map<String, dynamic> buildRequest(String code);
 
@@ -357,7 +362,7 @@ class FireWorks extends OpenAiCompatible {
 ///      },
 ///      customParser: (response) => response['choices'][0]['message']['content']
 ///    );
-///    controller = CodeCrafterController();
+///    controller = CodeForgeController();
 ///    controller.language = python;
 ///    super.initState();
 ///  }
@@ -369,7 +374,7 @@ class FireWorks extends OpenAiCompatible {
 ///  Widget build(BuildContext context) {
 ///    return MaterialApp(
 ///      home: Scaffold(
-///        body: CodeCrafter(
+///        body: CodeForge(
 ///          editorTheme: anOldHopeTheme,
 ///          controller: controller,
 ///          aiCompletion: AiCompletion(
@@ -463,7 +468,7 @@ enum CompletionType {
   /// This is the default behavior.
   auto,
 
-  /// Completion is triggered manually, typically through the getManualAiCompletion() callback in the [CodeCrafterController].
+  /// Completion is triggered manually, typically through the getManualAiCompletion() callback in the [CodeForgeController].
   /// eg:
   /// ```dart
   /// controller.getManualAiCompletion();

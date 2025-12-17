@@ -47,7 +47,7 @@ packages:
       path: ".."
       relative: true
     source: path
-    version: "1.0.0"
+    version: "1.1.0"
   collection:
     dependency: transitive
     description:
@@ -303,6 +303,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.0.3"
+  rope:
+    dependency: transitive
+    description:
+      name: rope
+      sha256: f5693180f51627d157cacb44b91b32f39148ee9a5dce567b26977e95949869ce
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.0.5"
   scroll_to_index:
     dependency: transitive
     description:
@@ -493,5 +501,5 @@ packages:
     source: hosted
     version: "1.1.0"
 sdks:
-  dart: ">=3.10.1 <4.0.0"
+  dart: ">=3.10.3 <4.0.0"
   flutter: ">=3.35.0"

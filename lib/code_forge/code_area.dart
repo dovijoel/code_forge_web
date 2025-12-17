@@ -18,10 +18,7 @@ import 'package:markdown_widget/markdown_widget.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/services.dart';
-
-//TODO: More lsp features
-//TODO: Tokenized input to the AI model for efficient completion.
+import 'package:flutter/services.dart'; 
 
 /// A highly customizable code editor widget for Flutter.
 ///
@@ -235,17 +232,20 @@ class _CodeForgeState extends State<CodeForge>
   late final ValueNotifier<bool> _selectionActiveNotifier, _isHoveringPopup;
   late final UndoRedoController _undoRedoController;
   final ValueNotifier<Offset> _offsetNotifier = ValueNotifier(Offset(0, 0));
+  final ValueNotifier<List<dynamic>?> _lspActionNotifier = ValueNotifier(null);
+  final ValueNotifier<Offset?> _lspActionOffsetNotifier = ValueNotifier(null);
   final Map<String, String> _cachedResponse = {};
   final _isMobile = Platform.isAndroid || Platform.isIOS;
   final _suggScrollController = ScrollController();
+  final _actionScrollController = ScrollController();
   TextInputConnection? _connection;
   StreamSubscription? _lspResponsesSubscription;
   bool _lspReady = false, _isHovering = false, _isTyping = false;
   String _previousValue = "";
   List<LspSemanticToken>? _semanticTokens;
   int _semanticTokensVersion = 0;
-  int _sugSelIndex = 0;
-  Timer? _hoverTimer, _aiDebounceTimer, _semanticTokenTimer;
+  int _sugSelIndex = 0, _actionSelIndex = 0;
+  Timer? _hoverTimer, _aiDebounceTimer, _semanticTokenTimer, _codeActionTimer;
   List<dynamic> _suggestions = [];
   TextSelection _prevSelection = TextSelection.collapsed(offset: 0);
 
@@ -267,7 +267,8 @@ class _CodeForgeState extends State<CodeForge>
     _contextMenuOffsetNotifier = ValueNotifier(const Offset(-1, -1));
     _selectionActiveNotifier = ValueNotifier(false);
     _isHoveringPopup = ValueNotifier<bool>(false);
-    _controller.manualAiCompletion = getManualAiSuggestion;
+    _controller.manualAiCompletion = _getManualAiSuggestion;
+    _controller.userCodeAction = _fetchCodeActionsForCurrentPosition;
     _controller.readOnly = widget.readOnly;
     _selectionStyle = widget.selectionStyle ?? CodeSelectionStyle();
     _undoRedoController = widget.undoController ?? UndoRedoController();
@@ -413,14 +414,87 @@ class _CodeForgeState extends State<CodeForge>
         }
       })();
 
-      _lspResponsesSubscription = widget.lspConfig!.responses.listen((data) {
+      _lspResponsesSubscription = widget.lspConfig!.responses.listen((data) async{
+        if (data['method'] == 'workspace/applyEdit') {
+          final Map<String, dynamic>? params = data['params'];
+          if (params != null && params.isNotEmpty) {
+            try {
+              final edit = params['edit'] as Map<String, dynamic>?;
+              if (edit != null) {
+                final fileUri = Uri.file(widget.filePath!).toString();
+
+                if (edit.containsKey('changes') && edit['changes'] is Map) {
+                  final Map changes = edit['changes'] as Map;
+                  if (changes.containsKey(fileUri)) {
+                    final List edits = List.from(changes[fileUri] as List);
+
+                    final converted = <Map<String, dynamic>>[];
+                    for (final e in edits) {
+                      try {
+                        final start = e['range']?['start'];
+                        final end = e['range']?['end'];
+                        if (start == null || end == null) continue;
+                        final startOffset = _controller.getLineStartOffset(start['line'] as int) + (start['character'] as int);
+                        final endOffset = _controller.getLineStartOffset(end['line'] as int) + (end['character'] as int);
+                        final newText = e['newText'] as String? ?? '';
+                        converted.add({'start': startOffset, 'end': endOffset, 'newText': newText});
+                      } catch (_) {
+                        continue;
+                      }
+                    }
+
+                    converted.sort((a, b) => (b['start'] as int).compareTo(a['start'] as int));
+                    for (final ce in converted) {
+                      _controller.replaceRange(ce['start'] as int, ce['end'] as int, ce['newText'] as String);
+                    }
+
+                    if (widget.lspConfig != null) await widget.lspConfig!.updateDocument(_controller.text);
+                  }
+                }
+
+                else if (edit.containsKey('documentChanges') && edit['documentChanges'] is List) {
+                  final List docChanges = List.from(edit['documentChanges'] as List);
+                  for (final dc in docChanges) {
+                    if (dc is Map) {
+                      final td = dc['textDocument'];
+                      final uri = td != null ? td['uri'] as String? : null;
+                      if (uri == fileUri && dc.containsKey('edits')) {
+                        final List edits = List.from(dc['edits'] as List);
+                        final converted = <Map<String, dynamic>>[];
+                        for (final e in edits) {
+                          try {
+                            final start = e['range']?['start'];
+                            final end = e['range']?['end'];
+                            if (start == null || end == null) continue;
+                            final int startOffset = _controller.getLineStartOffset(start['line'] as int) + (start['character'] as int);
+                            final int endOffset = _controller.getLineStartOffset(end['line'] as int) + (end['character'] as int);
+                            final String newText = e['newText'] as String? ?? '';
+                            converted.add({'start': startOffset, 'end': endOffset, 'newText': newText});
+                          } catch (_) {
+                            continue;
+                          }
+                        }
+                        converted.sort((a, b) => (b['start'] as int).compareTo(a['start'] as int));
+                        for (final ce in converted) {
+                          _controller.replaceRange(ce['start'] as int, ce['end'] as int, ce['newText'] as String);
+                        }
+                        if (widget.lspConfig != null) await widget.lspConfig!.updateDocument(_controller.text);
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (e, st) {
+              debugPrint('Error applying workspace/applyEdit: $e\n$st');
+            }
+          }
+        }
         if (data['method'] == 'textDocument/publishDiagnostics') {
-          final diagnostics = data['params']['diagnostics'] as List;
+          final List<dynamic> diagnostics = data['params']['diagnostics'];
           if (diagnostics.isNotEmpty) {
             final List<LspErrors> errors = [];
-            for (final item in diagnostics) {
-              final d = item as Map<String, dynamic>;
-              int severity = d['severity'] ?? 0;
+            for (final Map<String, dynamic> item in diagnostics) {
+              int severity = item['severity'] ?? 0;
               if (severity == 1 && widget.lspConfig!.disableError) {
                 severity = 0;
               }
@@ -431,13 +505,36 @@ class _CodeForgeState extends State<CodeForge>
                 errors.add(
                   LspErrors(
                     severity: severity,
-                    range: d['range'],
-                    message: d['message'] ?? '',
+                    range: item['range'],
+                    message: item['message'] ?? '',
                   ),
                 );
               }
             }
             _diagnosticsNotifier.value = errors;
+            _codeActionTimer?.cancel();
+            _codeActionTimer = Timer(const Duration(milliseconds: 250), () async {
+              if (!mounted || widget.lspConfig == null) return;
+              if (errors.isEmpty) {
+                _lspActionNotifier.value = null;
+                return;
+              }
+              int minStartLine = errors.map((d) => d.range['start']?['line'] as int? ?? 0).reduce(min);
+              int minStartChar = errors.map((d) => d.range['start']?['character'] as int? ?? 0).reduce(min);
+              int maxEndLine = errors.map((d) => d.range['end']?['line'] as int? ?? 0).reduce(max);
+              int maxEndChar = errors.map((d) => d.range['end']?['character'] as int? ?? 0).reduce(max);
+
+              final actions = await widget.lspConfig!.getCodeActions(
+                startLine: minStartLine,
+                startCharacter: minStartChar,
+                endLine: maxEndLine,
+                endCharacter: maxEndChar,
+                diagnostics: diagnostics.cast<Map<String, dynamic>>(),
+              );
+              _lspActionNotifier.value = actions;
+              _actionSelIndex = 0;
+            });
+
           } else {
             _diagnosticsNotifier.value = [];
           }
@@ -485,6 +582,8 @@ class _CodeForgeState extends State<CodeForge>
           _aiNotifier.value == null) {
         if (_suggestionNotifier.value != null) return;
         final text = _controller.text;
+        const int maxSuffixChars = 1000;
+        const int maxPrefixChars = 3000;
         final cursorPosition = _controller.selection.extentOffset.clamp(
           0,
           _controller.length,
@@ -496,8 +595,31 @@ class _CodeForgeState extends State<CodeForge>
             textAfterCursor.startsWith('\n') ||
             textAfterCursor.trim().isEmpty;
         if (!lineEnd) return;
-        final codeToSend =
-            "${text.substring(0, cursorPosition)}<|CURSOR|>${text.substring(cursorPosition)}";
+        final start = (cursorPosition - maxPrefixChars).clamp(0, cursorPosition);
+        final end = (cursorPosition + maxSuffixChars).clamp(
+          cursorPosition,
+          text.length,
+        );
+
+        final prefixContext = text.substring(start, cursorPosition);
+        final suffixContext = text.substring(cursorPosition, end);
+
+        final codeToSend = '''
+        Language: ${widget.language!.name}
+        Task: Code completion
+
+        Context before cursor:
+        --------------------------------
+        $prefixContext
+        --------------------------------
+        <|CURSOR|>
+        --------------------------------
+        Context after cursor:
+        --------------------------------
+        $suffixContext
+        --------------------------------
+        ''';
+
         if (widget.aiCompletion!.completionType == CompletionType.auto ||
             widget.aiCompletion!.completionType == CompletionType.mixed) {
           _aiDebounceTimer = Timer(
@@ -556,6 +678,10 @@ class _CodeForgeState extends State<CodeForge>
           if (mounted && _suggestions.isNotEmpty) {
             _sugSelIndex = 0;
             _suggestionNotifier.value = _suggestions;
+            if(_lspActionOffsetNotifier.value != null){
+              _lspActionOffsetNotifier.value = null;
+              _lspActionNotifier.value = null;
+            }
           }
         } else {
           _suggestionNotifier.value = null;
@@ -600,6 +726,32 @@ class _CodeForgeState extends State<CodeForge>
         targetOffset.clamp(
           _suggScrollController.position.minScrollExtent,
           _suggScrollController.position.maxScrollExtent,
+        ),
+      );
+    }
+  }
+
+  void _scrollToSelectedAction() {
+    if (!_actionScrollController.hasClients) return;
+
+    final itemExtent = (widget.textStyle?.fontSize ?? 14) + 6.5;
+    final selectedOffset = _actionSelIndex * itemExtent;
+    final currentScroll = _actionScrollController.offset;
+    final viewportHeight = _actionScrollController.position.viewportDimension;
+
+    double? targetOffset;
+
+    if (selectedOffset < currentScroll) {
+      targetOffset = selectedOffset;
+    } else if (selectedOffset + itemExtent > currentScroll + viewportHeight) {
+      targetOffset = selectedOffset - viewportHeight + itemExtent;
+    }
+
+    if (targetOffset != null) {
+      _actionScrollController.jumpTo(
+        targetOffset.clamp(
+          _actionScrollController.position.minScrollExtent,
+          _actionScrollController.position.maxScrollExtent,
         ),
       );
     }
@@ -680,6 +832,26 @@ class _CodeForgeState extends State<CodeForge>
     }
   }
 
+  Future<void> _fetchCodeActionsForCurrentPosition() async {
+    if (widget.lspConfig == null) return;
+    final sel = _controller.selection;
+    final cursor = sel.extentOffset;
+    final line = _controller.getLineAtOffset(cursor);
+    final lineStart = _controller.getLineStartOffset(line);
+    final character = cursor - lineStart;
+  
+    final actions = await widget.lspConfig!.getCodeActions(
+      startLine: line, startCharacter: character,
+      endLine: line, endCharacter: character,
+      diagnostics: _diagnosticsNotifier.value.map((item)=> item.toJson()).toList(),
+    );
+
+    _suggestionNotifier.value = null;
+    _lspActionNotifier.value = actions;
+    _actionSelIndex = 0;
+    _lspActionOffsetNotifier.value = _offsetNotifier.value;
+  }
+
   void _scheduleSemantictokenRefresh() {
     _semanticTokenTimer?.cancel();
     _semanticTokenTimer = Timer(_semanticTokenDebounce, () async {
@@ -714,6 +886,7 @@ class _CodeForgeState extends State<CodeForge>
     _hoverTimer?.cancel();
     _aiDebounceTimer?.cancel();
     _semanticTokenTimer?.cancel();
+    _actionScrollController.dispose();
     super.dispose();
   }
 
@@ -1280,31 +1453,16 @@ class _CodeForgeState extends State<CodeForge>
                                   return Focus(
                                     focusNode: _focusNode,
                                     onKeyEvent: (node, event) {
-                                      if (event is KeyDownEvent ||
-                                          event is KeyRepeatEvent) {
-                                        final isShiftPressed = HardwareKeyboard
-                                            .instance
-                                            .isShiftPressed;
-                                        final isCtrlPressed =
-                                            HardwareKeyboard
-                                                .instance
-                                                .isControlPressed ||
-                                            HardwareKeyboard
-                                                .instance
-                                                .isMetaPressed;
-                                        if (_suggestionNotifier.value != null &&
-                                            _suggestionNotifier
-                                                .value!
-                                                .isNotEmpty) {
+                                      if (event is KeyDownEvent || event is KeyRepeatEvent) {
+                                        final isShiftPressed = HardwareKeyboard.instance.isShiftPressed;
+                                        final isCtrlPressed = HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isMetaPressed;
+                                        if (_suggestionNotifier.value != null && _suggestionNotifier.value!.isNotEmpty) {
+                                          final suggestions = _suggestionNotifier.value!;
                                           switch (event.logicalKey) {
                                             case LogicalKeyboardKey.arrowDown:
                                               if (mounted) {
                                                 setState(() {
-                                                  _sugSelIndex =
-                                                      (_sugSelIndex + 1) %
-                                                      _suggestionNotifier
-                                                          .value!
-                                                          .length;
+                                                  _sugSelIndex = (_sugSelIndex + 1) % suggestions.length;
                                                   _scrollToSelectedSuggestion();
                                                 });
                                               }
@@ -1312,15 +1470,7 @@ class _CodeForgeState extends State<CodeForge>
                                             case LogicalKeyboardKey.arrowUp:
                                               if (mounted) {
                                                 setState(() {
-                                                  _sugSelIndex =
-                                                      (_sugSelIndex -
-                                                          1 +
-                                                          _suggestionNotifier
-                                                              .value!
-                                                              .length) %
-                                                      _suggestionNotifier
-                                                          .value!
-                                                          .length;
+                                                  _sugSelIndex = (_sugSelIndex - 1 + suggestions.length) % suggestions.length;
                                                   _scrollToSelectedSuggestion();
                                                 });
                                               }
@@ -1331,6 +1481,49 @@ class _CodeForgeState extends State<CodeForge>
                                               return KeyEventResult.handled;
                                             case LogicalKeyboardKey.escape:
                                               _suggestionNotifier.value = null;
+                                              return KeyEventResult.handled;
+                                            default:
+                                              break;
+                                          }
+                                        }
+
+                                        if (
+                                          _lspActionNotifier.value != null &&
+                                          _lspActionOffsetNotifier.value!= null &&
+                                          _lspActionNotifier.value!.isNotEmpty
+                                        ) {
+                                          final actions = _lspActionNotifier.value!;
+                                          switch (event.logicalKey) {
+                                            case LogicalKeyboardKey.arrowDown:
+                                              if (mounted) {
+                                                setState(() {
+                                                  _actionSelIndex = (_actionSelIndex + 1) % actions.length;
+                                                  _scrollToSelectedAction();
+                                                });
+                                              }
+                                              return KeyEventResult.handled;
+                                            case LogicalKeyboardKey.arrowUp:
+                                              if (mounted) {
+                                                setState(() {
+                                                  _actionSelIndex = (_actionSelIndex - 1 + actions.length) % actions.length;
+                                                  _scrollToSelectedAction();
+                                                });
+                                              }
+                                              return KeyEventResult.handled;
+                                            case LogicalKeyboardKey.enter:
+                                            case LogicalKeyboardKey.tab:
+                                              (() async{
+                                                await _acceptActions(
+                                                  _lspActionNotifier.value!,
+                                                  _actionSelIndex
+                                                );
+                                              })();
+                                              _lspActionNotifier.value = null;
+                                              _lspActionOffsetNotifier.value = null;
+                                              return KeyEventResult.handled;
+                                            case LogicalKeyboardKey.escape:
+                                              _lspActionNotifier.value = null;
+                                              _lspActionOffsetNotifier.value = null;
                                               return KeyEventResult.handled;
                                             default:
                                               break;
@@ -1405,6 +1598,12 @@ class _CodeForgeState extends State<CodeForge>
                                             case LogicalKeyboardKey.arrowRight:
                                               _moveWordRight(false);
                                               _commonKeyFunctions();
+                                              return KeyEventResult.handled;
+                                            case LogicalKeyboardKey.period:
+                                              (()async{
+                                                _suggestionNotifier.value = null;
+                                                await _fetchCodeActionsForCurrentPosition();
+                                              })();
                                               return KeyEventResult.handled;
                                             default:
                                               break;
@@ -1593,6 +1792,8 @@ class _CodeForgeState extends State<CodeForge>
                                       suggestionNotifier: _suggestionNotifier,
                                       aiCompletionTextStyle:
                                           widget.aiCompletionTextStyle,
+                                      lspActionNotifier: _lspActionNotifier,
+                                      lspActionOffsetNotifier: _lspActionOffsetNotifier,
                                     ),
                                   );
                                 },
@@ -1619,8 +1820,8 @@ class _CodeForgeState extends State<CodeForge>
                     }
                     return Positioned(
                       width: screenWidth < 700
-                          ? screenWidth * 0.63
-                          : screenWidth * 0.3,
+                        ? screenWidth * 0.63
+                        : screenWidth * 0.3,
                       top: offset.dy + (widget.textStyle?.fontSize ?? 14) + 10,
                       left: offset.dx,
                       child: ConstrainedBox(
@@ -1636,13 +1837,11 @@ class _CodeForgeState extends State<CodeForge>
                           margin: EdgeInsets.zero,
                           child: RawScrollbar(
                             thumbVisibility: true,
-                            thumbColor: _editorTheme['root']!.color!.withAlpha(
-                              80,
-                            ),
+                            thumbColor: _editorTheme['root']!.color!.withAlpha(80),
+                            interactive: true,
                             controller: _suggScrollController,
                             child: ListView.builder(
-                              itemExtent:
-                                  (widget.textStyle?.fontSize ?? 14) + 6.5,
+                              itemExtent: (widget.textStyle?.fontSize ?? 14) + 6.5,
                               controller: _suggScrollController,
                               padding: EdgeInsets.only(right: 5),
                               shrinkWrap: true,
@@ -1651,8 +1850,8 @@ class _CodeForgeState extends State<CodeForge>
                                 final item = sugg[indx];
                                 return Container(
                                   color: _sugSelIndex == indx
-                                      ? Color(0xff024281)
-                                      : Colors.transparent,
+                                    ? _suggestionStyle.focusColor
+                                    : Colors.transparent,
                                   child: InkWell(
                                     canRequestFocus: false,
                                     hoverColor: _suggestionStyle.hoverColor,
@@ -1691,14 +1890,14 @@ class _CodeForgeState extends State<CodeForge>
                                               child: Text(
                                                 item.importUri![0],
                                                 style: _suggestionStyle
-                                                    .textStyle
-                                                    .copyWith(
-                                                      color: _suggestionStyle
-                                                          .textStyle
-                                                          .color
-                                                          ?.withAlpha(150),
-                                                    ),
-                                                overflow: TextOverflow.ellipsis,
+                                                  .textStyle
+                                                  .copyWith(
+                                                    color: _suggestionStyle
+                                                      .textStyle
+                                                      .color
+                                                      ?.withAlpha(150),
+                                                  ),
+                                              overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
                                         ],
@@ -2074,10 +2273,109 @@ class _CodeForgeState extends State<CodeForge>
                     : SizedBox.shrink();
               },
             ),
+            ValueListenableBuilder(
+              valueListenable: _lspActionOffsetNotifier,
+              builder: (_, offset, child){
+                if(
+                    offset == null ||
+                    _lspActionNotifier.value == null ||
+                    widget.lspConfig == null
+                  ) {
+                  return SizedBox.shrink();
+                }
+                
+                return Positioned(
+                  width: screenWidth < 700
+                    ? screenWidth * 0.63
+                    : screenWidth * 0.3,
+                  top: offset.dy + (widget.textStyle?.fontSize ?? 14) + 10,
+                  left: offset.dx,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: 400,
+                      maxWidth: 400,
+                      minWidth: 70,
+                    ),
+                    child: Card(
+                      shape: _suggestionStyle.shape,
+                      elevation: _suggestionStyle.elevation,
+                      color: _suggestionStyle.backgroundColor,
+                      margin: EdgeInsets.zero,
+                      child: RawScrollbar(
+                        controller: _actionScrollController,
+                        thumbVisibility: true,
+                        thumbColor: _editorTheme['root']!.color!.withAlpha(80),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          controller: _actionScrollController,
+                          itemExtent: (widget.textStyle?.fontSize ?? 14) + 6.5,
+                          itemCount: _lspActionNotifier.value!.length,
+                          itemBuilder: (_, indx){
+                            final actionData = List.from(_lspActionNotifier.value!).cast<Map<String, dynamic>>();
+                            return Tooltip(
+                              message: actionData[indx]['title'],
+                              child: InkWell(
+                                hoverColor: _suggestionStyle.hoverColor,
+                                  onTap: () {
+                                    try {
+                                      (() async{
+                                        await _acceptActions(actionData, indx);
+                                      })();
+                                    } catch (e, st) {
+                                      debugPrint('Code action failed: $e\n$st');
+                                    } finally {
+                                      _lspActionNotifier.value = null;
+                                      _lspActionOffsetNotifier.value = null;
+                                    }
+                                  },
+                                child: Container(
+                                  color: indx == _actionSelIndex
+                                    ? _suggestionStyle.focusColor
+                                    : Colors.transparent,
+                                  child: Row(
+                                    children: [
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 5.5),
+                                        child: Icon(
+                                          Icons.lightbulb_outline,
+                                          color: Colors.yellowAccent,
+                                          size: _suggestionStyle.textStyle.fontSize ?? 14,
+                                        ),
+                                      ),
+                                      Expanded(
+                                        child: Padding(
+                                          padding: const EdgeInsets.only(left: 20),
+                                          child: Text(
+                                            overflow: TextOverflow.ellipsis,
+                                            actionData[indx]['title'],
+                                            style: _suggestionStyle.textStyle
+                                          ),
+                                        ),
+                                      )
+                                    ]
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }
+            )
           ],
         );
       },
     );
+  }
+
+  Future<void> _acceptActions(List<dynamic> actionData, int indx) async{
+    final Map<String, dynamic> action = actionData[indx];
+    final String command = action['command'];
+    final List args = action['arguments'];
+    await widget.lspConfig!.executeCommand(command, args);
   }
 
   void _acceptSuggestion() {
@@ -2103,7 +2401,7 @@ class _CodeForgeState extends State<CodeForge>
     _sugSelIndex = 0;
   }
 
-  Future<void> getManualAiSuggestion() async {
+  Future<void> _getManualAiSuggestion() async {
     _suggestionNotifier.value = null;
     if (widget.aiCompletion?.completionType == CompletionType.manual ||
         widget.aiCompletion?.completionType == CompletionType.mixed) {
@@ -2156,8 +2454,9 @@ class _CodeField extends LeafRenderObjectWidget {
   final ValueNotifier<bool> selectionActiveNotifier, isHoveringPopup;
   final ValueNotifier<Offset> contextMenuOffsetNotifier, offsetNotifier;
   final ValueNotifier<List<dynamic>?> hoverNotifier, suggestionNotifier;
+  final ValueNotifier<List<dynamic>?> lspActionNotifier;
   final ValueNotifier<String?> aiNotifier;
-  final ValueNotifier<Offset?> aiOffsetNotifier;
+  final ValueNotifier<Offset?> aiOffsetNotifier, lspActionOffsetNotifier;
   final BuildContext context;
   final TextStyle? aiCompletionTextStyle;
 
@@ -2185,6 +2484,8 @@ class _CodeField extends LeafRenderObjectWidget {
     required this.suggestionNotifier,
     required this.aiNotifier,
     required this.aiOffsetNotifier,
+    required this.lspActionNotifier,
+    required this.lspActionOffsetNotifier,
     required this.isHoveringPopup,
     required this.context,
     required this.lineWrap,
@@ -2230,6 +2531,8 @@ class _CodeField extends LeafRenderObjectWidget {
       aiOffsetNotifier: aiOffsetNotifier,
       isHoveringPopup: isHoveringPopup,
       suggestionNotifier: suggestionNotifier,
+      lspActionNotifier: lspActionNotifier,
+      lspActionOffsetNotifier: lspActionOffsetNotifier,
       aiCompletionTextStyle: aiCompletionTextStyle,
     );
   }
@@ -2270,12 +2573,14 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
   final ValueNotifier<bool> selectionActiveNotifier, isHoveringPopup;
   final ValueNotifier<Offset> contextMenuOffsetNotifier, offsetNotifier;
   final ValueNotifier<List<dynamic>?> hoverNotifier, suggestionNotifier;
-  final ValueNotifier<Offset?> aiOffsetNotifier;
+  final ValueNotifier<List<dynamic>?> lspActionNotifier;
+  final ValueNotifier<Offset?> aiOffsetNotifier, lspActionOffsetNotifier;
   final ValueNotifier<String?> aiNotifier;
   final BuildContext context;
   final LspConfig? lspConfig;
   final Map<int, double> _lineWidthCache = {};
   final Map<int, String> _lineTextCache = {};
+  final Map<int, Rect> _actionBulbRects = {};
   final Map<int, ui.Paragraph> _paragraphCache = {};
   final Map<int, double> _lineHeightCache = {};
   final List<FoldRange> _foldRanges = [];
@@ -2372,13 +2677,26 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
 
   _CodeFieldRenderer({
     required this.controller,
-    required Map<String, TextStyle> editorTheme,
-    required Mode language,
     required this.vscrollController,
     required this.hscrollController,
     required this.focusNode,
-    required bool readOnly,
     required this.caretBlinkController,
+    required this.isMobile,
+    required this.selectionActiveNotifier,
+    required this.contextMenuOffsetNotifier,
+    required this.offsetNotifier,
+    required this.hoverNotifier,
+    required this.suggestionNotifier,
+    required this.lspActionNotifier,
+    required this.lspActionOffsetNotifier,
+    required this.aiNotifier,
+    required this.aiOffsetNotifier,
+    required this.isHoveringPopup,
+    required this.context,
+    required bool lineWrap,
+    required Map<String, TextStyle> editorTheme,
+    required Mode language,
+    required bool readOnly,
     required bool enableFolding,
     required bool enableGuideLines,
     required bool enableGutter,
@@ -2386,17 +2704,6 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     required GutterStyle gutterStyle,
     required CodeSelectionStyle selectionStyle,
     required List<LspErrors> diagnostics,
-    required this.isMobile,
-    required this.selectionActiveNotifier,
-    required this.contextMenuOffsetNotifier,
-    required this.offsetNotifier,
-    required this.hoverNotifier,
-    required this.suggestionNotifier,
-    required this.aiNotifier,
-    required this.aiOffsetNotifier,
-    required this.isHoveringPopup,
-    required this.context,
-    required bool lineWrap,
     this.languageId,
     this.lspConfig,
     EdgeInsets? innerPadding,
@@ -2474,6 +2781,14 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
           _getCaretInfo().offset.dy - vscrollController.offset,
         );
       }
+
+      if(lspActionOffsetNotifier.value != null){
+        lspActionOffsetNotifier.value = Offset(
+          lspActionOffsetNotifier.value!.dx,
+          _getCaretInfo().offset.dy - vscrollController.offset,
+        );
+      }
+
       markNeedsPaint();
     });
 
@@ -2484,8 +2799,17 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
           offsetNotifier.value.dy,
         );
       }
+
+      if(lspActionOffsetNotifier.value != null){
+        lspActionOffsetNotifier.value = Offset(
+          _getCaretInfo().offset.dx - hscrollController.offset,
+          lspActionOffsetNotifier.value!.dy,
+        );
+      }
+
       markNeedsPaint();
     });
+
     caretBlinkController.addListener(markNeedsPaint);
     controller.addListener(_onControllerChange);
 
@@ -3971,6 +4295,8 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       }
     }
 
+    _actionBulbRects.clear();
+
     double currentY = firstVisibleLineY;
     for (int i = firstVisibleLine; i < lineCount; i++) {
       if (hasActiveFolds && _isLineFolded(i)) continue;
@@ -4019,6 +4345,51 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
                     vscrollController.offset,
               ),
         );
+
+        if (lspActionNotifier.value != null) {
+          final actions = lspActionNotifier.value!.cast<Map<String,dynamic>>();
+          if(actions.any((item){
+            try{
+              return (item['arguments'][0]['range']['start']['line'] as int) == i;
+            } catch(e) {
+              return false;
+            }
+          })){
+
+          final icon = Icons.lightbulb_outline;
+          final actionBulbPainter = TextPainter(
+            text: TextSpan(
+              text: String.fromCharCode(icon.codePoint),
+              style: TextStyle(
+                fontSize: textStyle?.fontSize ?? 14,
+                color: Colors.yellowAccent,
+                fontFamily: icon.fontFamily,
+                package: icon.fontPackage,
+              ),
+            ),
+            textDirection: TextDirection.ltr,
+          );
+          actionBulbPainter.layout();
+
+          final bulbX =
+              offset.dx + 4;
+          final bulbY =
+              offset.dy +
+              (innerPadding?.top ?? 0) +
+              contentTop -
+              vscrollController.offset +
+              (_lineHeight - actionBulbPainter.height) / 2;
+          
+          _actionBulbRects[i] = Rect.fromLTWH(
+            bulbX,
+            bulbY,
+            actionBulbPainter.width,
+            actionBulbPainter.height,
+          );
+
+          actionBulbPainter.paint(canvas, Offset(bulbX, bulbY));
+          }
+        }
 
         if (enableFolding) {
           final foldRange = _getFoldRangeAtLine(i);
@@ -4100,12 +4471,10 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     iconPainter.paint(
       canvas,
       offset +
-          Offset(
-            _gutterWidth - iconPainter.width - 2,
-            (innerPadding?.top ?? 0) +
-                y +
-                (_lineHeight - iconPainter.height) / 2,
-          ),
+        Offset(
+          _gutterWidth - iconPainter.width - 2,
+          (innerPadding?.top ?? 0) + y + (_lineHeight - iconPainter.height) / 2,
+        ),
     );
   }
 
@@ -5103,16 +5472,19 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
   @override
   void handleEvent(PointerEvent event, covariant BoxHitTestEntry entry) {
     final localPosition = event.localPosition;
+    final clickY = localPosition.dy
+      + vscrollController.offset
+      - (innerPadding?.top ?? 0);
     _currentPosition = localPosition;
 
     final contentPosition = Offset(
-      localPosition.dx -
-          _gutterWidth -
-          (innerPadding?.left ?? innerPadding?.right ?? 0) +
-          (lineWrap ? 0 : hscrollController.offset),
-      localPosition.dy -
-          (innerPadding?.top ?? innerPadding?.bottom ?? 0) +
-          vscrollController.offset,
+      localPosition.dx
+        - _gutterWidth
+        - (innerPadding?.horizontal ?? innerPadding?.left ?? innerPadding?.right ?? 0)
+        + (lineWrap ? 0 : hscrollController.offset),
+      localPosition.dy
+        - (innerPadding?.vertical ?? innerPadding?.top ?? innerPadding?.bottom ?? 0)
+        + vscrollController.offset,
     );
     final textOffset = _getTextOffsetFromPosition(contentPosition);
 
@@ -5154,11 +5526,17 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
         contextMenuOffsetNotifier.value = const Offset(-1, -1);
       }
 
+      if (lspActionNotifier.value != null && _actionBulbRects.isNotEmpty) {
+        for (final entry in _actionBulbRects.entries) {
+          if (entry.value.contains(localPosition)) {
+            suggestionNotifier.value = null;
+            lspActionOffsetNotifier.value = event.localPosition;
+            return;
+          }
+        }
+      }
+
       if (enableFolding && enableGutter && localPosition.dx < _gutterWidth) {
-        final clickY =
-            localPosition.dy +
-            vscrollController.offset -
-            (innerPadding?.top ?? 0);
         final hasActiveFolds = _foldRanges.any((f) => f.isFolded);
         int clickedLine;
 

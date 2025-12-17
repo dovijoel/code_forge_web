@@ -26,7 +26,7 @@ part of 'lsp.dart';
 ///    }
 ///  }
 ///  ```
-///  Then use a `FutureBuilder` to initialize the LSP configuration and pass it to the `CodeCrafter` widget:
+///  Then use a `FutureBuilder` to initialize the LSP configuration and pass it to the `CodeForge` widget:
 ///```dart
 ///  @override
 ///  Widget build(BuildContext context) {
@@ -39,7 +39,7 @@ part of 'lsp.dart';
 ///              if(snapshot.connectionState == ConnectionState.waiting) {
 ///                return Center(child: CircularProgressIndicator());
 ///              }
-///              return CodeCrafter(
+///              return CodeForge(
 ///                wrapLines: true,
 ///                editorTheme: anOldHopeTheme,
 ///                controller: controller,
