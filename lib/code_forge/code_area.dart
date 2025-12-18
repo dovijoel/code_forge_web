@@ -419,70 +419,8 @@ class _CodeForgeState extends State<CodeForge>
           final Map<String, dynamic>? params = data['params'];
           if (params != null && params.isNotEmpty) {
             try {
-              final edit = params['edit'] as Map<String, dynamic>?;
-              if (edit != null) {
-                final fileUri = Uri.file(widget.filePath!).toString();
-
-                if (edit.containsKey('changes') && edit['changes'] is Map) {
-                  final Map changes = edit['changes'] as Map;
-                  if (changes.containsKey(fileUri)) {
-                    final List edits = List.from(changes[fileUri] as List);
-
-                    final converted = <Map<String, dynamic>>[];
-                    for (final e in edits) {
-                      try {
-                        final start = e['range']?['start'];
-                        final end = e['range']?['end'];
-                        if (start == null || end == null) continue;
-                        final startOffset = _controller.getLineStartOffset(start['line'] as int) + (start['character'] as int);
-                        final endOffset = _controller.getLineStartOffset(end['line'] as int) + (end['character'] as int);
-                        final newText = e['newText'] as String? ?? '';
-                        converted.add({'start': startOffset, 'end': endOffset, 'newText': newText});
-                      } catch (_) {
-                        continue;
-                      }
-                    }
-
-                    converted.sort((a, b) => (b['start'] as int).compareTo(a['start'] as int));
-                    for (final ce in converted) {
-                      _controller.replaceRange(ce['start'] as int, ce['end'] as int, ce['newText'] as String);
-                    }
-
-                    if (widget.lspConfig != null) await widget.lspConfig!.updateDocument(_controller.text);
-                  }
-                }
-
-                else if (edit.containsKey('documentChanges') && edit['documentChanges'] is List) {
-                  final List docChanges = List.from(edit['documentChanges'] as List);
-                  for (final dc in docChanges) {
-                    if (dc is Map) {
-                      final td = dc['textDocument'];
-                      final uri = td != null ? td['uri'] as String? : null;
-                      if (uri == fileUri && dc.containsKey('edits')) {
-                        final List edits = List.from(dc['edits'] as List);
-                        final converted = <Map<String, dynamic>>[];
-                        for (final e in edits) {
-                          try {
-                            final start = e['range']?['start'];
-                            final end = e['range']?['end'];
-                            if (start == null || end == null) continue;
-                            final int startOffset = _controller.getLineStartOffset(start['line'] as int) + (start['character'] as int);
-                            final int endOffset = _controller.getLineStartOffset(end['line'] as int) + (end['character'] as int);
-                            final String newText = e['newText'] as String? ?? '';
-                            converted.add({'start': startOffset, 'end': endOffset, 'newText': newText});
-                          } catch (_) {
-                            continue;
-                          }
-                        }
-                        converted.sort((a, b) => (b['start'] as int).compareTo(a['start'] as int));
-                        for (final ce in converted) {
-                          _controller.replaceRange(ce['start'] as int, ce['end'] as int, ce['newText'] as String);
-                        }
-                        if (widget.lspConfig != null) await widget.lspConfig!.updateDocument(_controller.text);
-                      }
-                    }
-                  }
-                }
+              if (params.containsKey('edit')) {
+                await _acceptActions(params);
               }
             } catch (e, st) {
               debugPrint('Error applying workspace/applyEdit: $e\n$st');
@@ -1329,22 +1267,24 @@ class _CodeForgeState extends State<CodeForge>
     final text = _controller.text;
     final selStart = selection.start;
     final selEnd = selection.end;
-    final lineStart = text.lastIndexOf('\n', selStart - 1) + 1;
+    final lineStart = selStart > 0
+      ? text.lastIndexOf('\n', selStart - 1) + 1
+      : 0;
     int lineEnd = text.indexOf('\n', selEnd);
     if (lineEnd == -1) lineEnd = text.length;
     if (lineStart == 0) return;
-
+  
     final prevLineEnd = lineStart - 1;
     final prevLineStart = text.lastIndexOf('\n', prevLineEnd - 1) + 1;
     final prevLine = text.substring(prevLineStart, prevLineEnd);
     final currentLines = text.substring(lineStart, lineEnd);
-
+  
     _controller.replaceRange(
       prevLineStart,
       lineEnd,
       '$currentLines\n$prevLine',
     );
-
+  
     final prevLineLen = prevLineEnd - prevLineStart;
     final offsetDelta = prevLineLen + 1;
     final newSelection = TextSelection(
@@ -1514,8 +1454,7 @@ class _CodeForgeState extends State<CodeForge>
                                             case LogicalKeyboardKey.tab:
                                               (() async{
                                                 await _acceptActions(
-                                                  _lspActionNotifier.value!,
-                                                  _actionSelIndex
+                                                  _lspActionNotifier.value![_actionSelIndex],
                                                 );
                                               })();
                                               _lspActionNotifier.value = null;
@@ -1600,7 +1539,7 @@ class _CodeForgeState extends State<CodeForge>
                                               _commonKeyFunctions();
                                               return KeyEventResult.handled;
                                             case LogicalKeyboardKey.period:
-                                              (()async{
+                                              (() async{
                                                 _suggestionNotifier.value = null;
                                                 await _fetchCodeActionsForCurrentPosition();
                                               })();
@@ -2319,7 +2258,7 @@ class _CodeForgeState extends State<CodeForge>
                                   onTap: () {
                                     try {
                                       (() async{
-                                        await _acceptActions(actionData, indx);
+                                        await _acceptActions(actionData[indx]);
                                       })();
                                     } catch (e, st) {
                                       debugPrint('Code action failed: $e\n$st');
@@ -2371,11 +2310,79 @@ class _CodeForgeState extends State<CodeForge>
     );
   }
 
-  Future<void> _acceptActions(List<dynamic> actionData, int indx) async{
-    final Map<String, dynamic> action = actionData[indx];
-    final String command = action['command'];
-    final List args = action['arguments'];
-    await widget.lspConfig!.executeCommand(command, args);
+  Future<void> _acceptActions(Map<String, dynamic> action) async{
+    final fileUri = Uri.file(widget.filePath!).toString();
+    if(action.containsKey('command')){
+      final String command = action['command'];
+      final List args = action['arguments'];
+      await widget.lspConfig!.executeCommand(command, args);
+      return;
+    } else if (
+        action.containsKey('edit') &&
+        (action['edit'] as Map).containsKey('changes')
+      ) {
+      final Map changes = action['edit']['changes'] as Map;
+      if (changes.containsKey(fileUri)) {
+        final List edits = List.from(changes[fileUri] as List);
+
+        final converted = <Map<String, dynamic>>[];
+        for (final e in edits) {
+          try {
+            final start = e['range']?['start'];
+            final end = e['range']?['end'];
+            if (start == null || end == null) continue;
+            final startOffset = _controller.getLineStartOffset(start['line'] as int) + (start['character'] as int);
+            final endOffset = _controller.getLineStartOffset(end['line'] as int) + (end['character'] as int);
+            final newText = e['newText'] as String? ?? '';
+            converted.add({'start': startOffset, 'end': endOffset, 'newText': newText});
+          } catch (_) {
+            continue;
+          }
+        }
+
+        converted.sort((a, b) => (b['start'] as int).compareTo(a['start'] as int));
+        for (final ce in converted) {
+          _controller.replaceRange(ce['start'] as int, ce['end'] as int, ce['newText'] as String);
+        }
+
+        if (widget.lspConfig != null) await widget.lspConfig!.updateDocument(_controller.text);
+      }
+      return;
+    } else if (
+      action.containsKey('documentChanges') &&
+      action['documentChanges'] is List
+    ) {
+      final List docChanges = List.from(action['documentChanges'] as List);
+      for (final dc in docChanges) {
+        if (dc is Map) {
+          final td = dc['textDocument'];
+          final uri = td != null ? td['uri'] as String? : null;
+          if (uri == fileUri && dc.containsKey('edits')) {
+            final List edits = List.from(dc['edits'] as List);
+            final converted = <Map<String, dynamic>>[];
+            for (final e in edits) {
+              try {
+                final start = e['range']?['start'];
+                final end = e['range']?['end'];
+                if (start == null || end == null) continue;
+                final int startOffset = _controller.getLineStartOffset(start['line'] as int) + (start['character'] as int);
+                final int endOffset = _controller.getLineStartOffset(end['line'] as int) + (end['character'] as int);
+                final String newText = e['newText'] as String? ?? '';
+                converted.add({'start': startOffset, 'end': endOffset, 'newText': newText});
+              } catch (_) {
+                continue;
+              }
+            }
+            converted.sort((a, b) => (b['start'] as int).compareTo(a['start'] as int));
+            for (final ce in converted) {
+              _controller.replaceRange(ce['start'] as int, ce['end'] as int, ce['newText'] as String);
+            }
+            if (widget.lspConfig != null) await widget.lspConfig!.updateDocument(_controller.text);
+          }
+        }
+      }
+      return;
+    }
   }
 
   void _acceptSuggestion() {
@@ -3922,12 +3929,11 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       canvas.drawParagraph(
         paragraph,
         offset +
-            Offset(
-              _gutterWidth +
-                  (innerPadding?.left ?? 0) -
-                  (lineWrap ? 0 : hscrollController.offset),
-              (innerPadding?.top ?? 0) + contentTop - vscrollController.offset,
-            ),
+        Offset(
+          _gutterWidth +
+          (innerPadding?.left ?? 0) - (lineWrap ? 0 : hscrollController.offset),
+          (innerPadding?.top ?? 0) + contentTop - vscrollController.offset,
+        ),
       );
 
       if (isFoldStart && foldRange.isFolded) {
@@ -3936,15 +3942,15 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
         canvas.drawParagraph(
           foldIndicator,
           offset +
-              Offset(
-                _gutterWidth +
-                    (innerPadding?.left ?? 0) +
-                    paraWidth -
-                    (lineWrap ? 0 : hscrollController.offset),
-                (innerPadding?.top ?? 0) +
-                    contentTop -
-                    vscrollController.offset,
-              ),
+          Offset(
+          _gutterWidth +
+            (innerPadding?.left ?? 0) +
+            paraWidth -
+            (lineWrap ? 0 : hscrollController.offset),
+          (innerPadding?.top ?? 0) +
+            contentTop -
+            vscrollController.offset,
+          ),
         );
       }
 
@@ -4346,11 +4352,18 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
               ),
         );
 
-        if (lspActionNotifier.value != null) {
+        if (lspActionNotifier.value != null && lspConfig != null) {
           final actions = lspActionNotifier.value!.cast<Map<String,dynamic>>();
           if(actions.any((item){
             try{
               return (item['arguments'][0]['range']['start']['line'] as int) == i;
+            } on NoSuchMethodError {
+              try {
+                final fileUri = Uri.file(lspConfig!.filePath).toString();
+                return (item['edit']['changes'][fileUri][0]['range']['start']['line'] as int) == i;
+              } catch (e) {
+                return false;
+              }
             } catch(e) {
               return false;
             }
@@ -5797,6 +5810,14 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       final foldRange = _getFoldRangeAtLine(hoveredLine);
       if (foldRange != null) {
         return SystemMouseCursors.click;
+      }
+
+      if (_actionBulbRects.isNotEmpty) {
+        for (final rect in _actionBulbRects.values) {
+          if (rect.contains(_currentPosition)) {
+            return SystemMouseCursors.click;
+          }
+        }
       }
 
       return MouseCursor.defer;
