@@ -26,7 +26,6 @@ class _MyAppState extends State<MyApp> {
     final data = await LspStdioConfig.start(
       executable: "dart",
       args: ["language-server", "--protocol=lsp"],
-      filePath: absFilePath,
       workspacePath: absWorkspacePath,
       languageId: "dart",
     );

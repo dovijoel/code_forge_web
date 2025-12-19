@@ -14,7 +14,6 @@ part of 'lsp.dart';
 ///      final config = await LspStdioConfig.start(
 ///        executable: '/home/athul/.nvm/versions/node/v20.19.2/bin/pyright-langserver',
 ///        args: ['--stdio']
-///        filePath: '/home/athul/Projects/lsp/example.py',
 ///        workspacePath: '/home/athul/Projects/lsp',
 ///        languageId: 'python',
 ///      );
@@ -75,7 +74,6 @@ class LspStdioConfig extends LspConfig {
 
   LspStdioConfig._({
     required this.executable,
-    required super.filePath,
     required super.workspacePath,
     required super.languageId,
     this.args,
@@ -86,7 +84,6 @@ class LspStdioConfig extends LspConfig {
 
   static Future<LspStdioConfig> start({
     required String executable,
-    required String filePath,
     required String workspacePath,
     required String languageId,
     List<String>? args,
@@ -96,7 +93,6 @@ class LspStdioConfig extends LspConfig {
   }) async {
     final config = LspStdioConfig._(
       executable: executable,
-      filePath: filePath,
       languageId: languageId,
       workspacePath: workspacePath,
       args: args,

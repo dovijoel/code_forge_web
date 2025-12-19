@@ -142,7 +142,7 @@ Add CodeForge to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  code_forge: ^1.2.1
+  code_forge: ^1.3.0
 ```
 
 Then run:
@@ -241,7 +241,6 @@ create a `LspSocketConfig` object and pass it to the `CodeForge` widget.
 
 ```dart
 final lspConfig = LspSocketConfig(
-    filePath: '/home/athul/Projects/lsp/example.py',
     workspacePath: "/home/athul/Projects/lsp",
     languageId: "python",
     serverUrl: "ws://localhost:5656"
@@ -253,7 +252,7 @@ Then pass the `lspConfig` instance to the `CodeForge` widget:
 CodeForge(
     controller: controller,
     theme: anOldHopeTheme,
-    filePath: "/home/athul/Projects/lsp/example.py" // Pass the same filePath used in LspConfig
+    filePath: "/home/athul/Projects/lsp/example.py"
     lspConfig: lspConfig, // Pass the LSP config here
 ),
 ```
@@ -283,7 +282,6 @@ Future<LspConfig?> _initLsp() async {
       final config = await LspStdioConfig.start(
         executable: '/home/athul/.nvm/versions/node/v20.19.2/bin/basedpyright-langserver',
         args: ['--stdio'],
-        filePath: '/home/athul/Projects/lsp/example.py',
         workspacePath: '/home/athul/Projects/lsp',
         languageId: 'python',
       );
@@ -333,7 +331,6 @@ Future<LspConfig> setupDartLsp() async {
   return await LspStdioConfig.start(
     executable: 'dart',
     args: ['language-server', '--protocol=lsp'],
-    filePath: '/path/to/your/file.dart',
     workspacePath: '/path/to/your/project',
     languageId: 'dart',
   );
@@ -355,8 +352,7 @@ Future<LspConfig> setupDartLsp() async {
                 language: langDart,
                 textStyle: GoogleFonts.jetBrainsMono(),
                 lspConfig: snapshot.data,
-                filePath: '/path/to/your/file.dart', // Mandatory field and should be same as the [filePath] given in the [LspConfig]
-              );
+                filePath: '/path/to/your/file.dart', // Mandatory field
             },
           ),
         ),
@@ -364,13 +360,6 @@ Future<LspConfig> setupDartLsp() async {
     );
   }
 ```
-
-<p align="center">
-  <img src="placeholder_lsp_features.gif" alt="LSP Features Demo" width="700"/>
-</p>
-</details>
-
-
 ---
 <details>
 <summary><h2>🤖 AI Completion</h2></summary>

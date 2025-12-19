@@ -231,6 +231,7 @@ class _CodeForgeState extends State<CodeForge>
   late final ValueNotifier<Offset> _contextMenuOffsetNotifier;
   late final ValueNotifier<bool> _selectionActiveNotifier, _isHoveringPopup;
   late final UndoRedoController _undoRedoController;
+  late final String? _filePath;
   final ValueNotifier<Offset> _offsetNotifier = ValueNotifier(Offset(0, 0));
   final ValueNotifier<List<dynamic>?> _lspActionNotifier = ValueNotifier(null);
   final ValueNotifier<Offset?> _lspActionOffsetNotifier = ValueNotifier(null);
@@ -272,6 +273,7 @@ class _CodeForgeState extends State<CodeForge>
     _controller.readOnly = widget.readOnly;
     _selectionStyle = widget.selectionStyle ?? CodeSelectionStyle();
     _undoRedoController = widget.undoController ?? UndoRedoController();
+    _filePath = widget.filePath;
 
     _controller.setUndoController(_undoRedoController);
 
@@ -372,124 +374,127 @@ class _CodeForgeState extends State<CodeForge>
 
     Future.microtask(CustomIcons.loadAllCustomFonts);
 
-    if (widget.filePath != null) {
+    if (_filePath == null && widget.lspConfig != null) {
+      throw ArgumentError(
+        "The `filePath` parameter cannot be null inorder to use `LspConfig`."
+        "A valid file path is required to use the LSP services.",
+      );
+    }
+
+    if (_filePath != null) {
       if (widget.initialText != null) {
         throw ArgumentError(
           'Cannot provide both filePath and initialText to CodeForge.',
         );
-      } else if (widget.filePath!.isNotEmpty) {
-        final file = File(widget.filePath!);
+      } else if (_filePath.isNotEmpty) {
+        final file = File(_filePath);
         _controller.text = file.readAsStringSync();
-        _controller.openedFile = file.path;
+        _controller.openedFile = _filePath;
+
+        if (widget.lspConfig != null) {
+          (() async {
+            final lspConfig = widget.lspConfig;
+            try {
+              if (lspConfig is LspSocketConfig) {
+                await lspConfig.connect();
+              }
+              if (!lspConfig!.isIntialized) {
+                await lspConfig.initialize();
+              }
+              await Future.delayed(const Duration(milliseconds: 300));
+              await lspConfig.openDocument(_filePath);
+              setState(() {
+                _lspReady = true;
+              });
+              await _fetchSemanticTokensFull();
+            } catch (e) {
+              if (mounted) {
+                debugPrint('Error initializing LSP: $e');
+              }
+            }
+          })();
+
+          _lspResponsesSubscription = widget.lspConfig!.responses.listen((
+            data,
+          ) async {
+            if (data['method'] == 'workspace/applyEdit') {
+              final Map<String, dynamic>? params = data['params'];
+              if (params != null && params.isNotEmpty) {
+                try {
+                  if (params.containsKey('edit')) {
+                    await _acceptActions(params);
+                  }
+                } catch (e, st) {
+                  debugPrint('Error applying workspace/applyEdit: $e\n$st');
+                }
+              }
+            }
+            if (data['method'] == 'textDocument/publishDiagnostics') {
+              final List<dynamic> diagnostics = data['params']['diagnostics'];
+              if (diagnostics.isNotEmpty) {
+                final List<LspErrors> errors = [];
+                for (final Map<String, dynamic> item in diagnostics) {
+                  int severity = item['severity'] ?? 0;
+                  if (severity == 1 && widget.lspConfig!.disableError) {
+                    severity = 0;
+                  }
+                  if (severity == 2 && widget.lspConfig!.disableWarning) {
+                    severity = 0;
+                  }
+                  if (severity > 0) {
+                    errors.add(
+                      LspErrors(
+                        severity: severity,
+                        range: item['range'],
+                        message: item['message'] ?? '',
+                      ),
+                    );
+                  }
+                }
+                _diagnosticsNotifier.value = errors;
+                _codeActionTimer?.cancel();
+                _codeActionTimer = Timer(
+                  const Duration(milliseconds: 250),
+                  () async {
+                    if (!mounted || widget.lspConfig == null) return;
+                    if (errors.isEmpty) {
+                      _lspActionNotifier.value = null;
+                      return;
+                    }
+                    int minStartLine = errors
+                        .map((d) => d.range['start']?['line'] as int? ?? 0)
+                        .reduce(min);
+                    int minStartChar = errors
+                        .map((d) => d.range['start']?['character'] as int? ?? 0)
+                        .reduce(min);
+                    int maxEndLine = errors
+                        .map((d) => d.range['end']?['line'] as int? ?? 0)
+                        .reduce(max);
+                    int maxEndChar = errors
+                        .map((d) => d.range['end']?['character'] as int? ?? 0)
+                        .reduce(max);
+
+                    final actions = await widget.lspConfig!.getCodeActions(
+                      filePath: _filePath,
+                      startLine: minStartLine,
+                      startCharacter: minStartChar,
+                      endLine: maxEndLine,
+                      endCharacter: maxEndChar,
+                      diagnostics: diagnostics.cast<Map<String, dynamic>>(),
+                    );
+                    _lspActionNotifier.value = actions;
+                    _actionSelIndex = 0;
+                  },
+                );
+              } else {
+                _diagnosticsNotifier.value = [];
+              }
+            }
+          });
+        }
       }
     } else if (widget.initialText != null && widget.initialText!.isNotEmpty) {
       _controller.text = widget.initialText!;
-    }
-
-    if (widget.lspConfig != null) {
-      if ((widget.lspConfig!.filePath != widget.filePath) ||
-          widget.filePath == null) {
-        throw Exception(
-          'File path in LspConfig does not match the provided filePath in CodeForge.',
-        );
-      }
-
-      (() async {
-        final lspConfig = widget.lspConfig;
-        try {
-          if (lspConfig is LspSocketConfig) {
-            await lspConfig.connect();
-          }
-          await lspConfig!.initialize();
-          await Future.delayed(const Duration(milliseconds: 300));
-          await lspConfig.openDocument(initialContent: _controller.text);
-          setState(() {
-            _lspReady = true;
-          });
-          await _fetchSemanticTokensFull();
-        } catch (e) {
-          if (mounted) {
-            debugPrint('Error initializing LSP: $e');
-          }
-        }
-      })();
-
-      _lspResponsesSubscription = widget.lspConfig!.responses.listen((
-        data,
-      ) async {
-        if (data['method'] == 'workspace/applyEdit') {
-          final Map<String, dynamic>? params = data['params'];
-          if (params != null && params.isNotEmpty) {
-            try {
-              if (params.containsKey('edit')) {
-                await _acceptActions(params);
-              }
-            } catch (e, st) {
-              debugPrint('Error applying workspace/applyEdit: $e\n$st');
-            }
-          }
-        }
-        if (data['method'] == 'textDocument/publishDiagnostics') {
-          final List<dynamic> diagnostics = data['params']['diagnostics'];
-          if (diagnostics.isNotEmpty) {
-            final List<LspErrors> errors = [];
-            for (final Map<String, dynamic> item in diagnostics) {
-              int severity = item['severity'] ?? 0;
-              if (severity == 1 && widget.lspConfig!.disableError) {
-                severity = 0;
-              }
-              if (severity == 2 && widget.lspConfig!.disableWarning) {
-                severity = 0;
-              }
-              if (severity > 0) {
-                errors.add(
-                  LspErrors(
-                    severity: severity,
-                    range: item['range'],
-                    message: item['message'] ?? '',
-                  ),
-                );
-              }
-            }
-            _diagnosticsNotifier.value = errors;
-            _codeActionTimer?.cancel();
-            _codeActionTimer = Timer(
-              const Duration(milliseconds: 250),
-              () async {
-                if (!mounted || widget.lspConfig == null) return;
-                if (errors.isEmpty) {
-                  _lspActionNotifier.value = null;
-                  return;
-                }
-                int minStartLine = errors
-                    .map((d) => d.range['start']?['line'] as int? ?? 0)
-                    .reduce(min);
-                int minStartChar = errors
-                    .map((d) => d.range['start']?['character'] as int? ?? 0)
-                    .reduce(min);
-                int maxEndLine = errors
-                    .map((d) => d.range['end']?['line'] as int? ?? 0)
-                    .reduce(max);
-                int maxEndChar = errors
-                    .map((d) => d.range['end']?['character'] as int? ?? 0)
-                    .reduce(max);
-
-                final actions = await widget.lspConfig!.getCodeActions(
-                  startLine: minStartLine,
-                  startCharacter: minStartChar,
-                  endLine: maxEndLine,
-                  endCharacter: maxEndChar,
-                  diagnostics: diagnostics.cast<Map<String, dynamic>>(),
-                );
-                _lspActionNotifier.value = actions;
-                _actionSelIndex = 0;
-              },
-            );
-          } else {
-            _diagnosticsNotifier.value = [];
-          }
-        }
-      });
     }
 
     _controller.addListener(() {
@@ -508,7 +513,7 @@ class _CodeForgeState extends State<CodeForge>
       final oldText = _previousValue;
       final oldSelection = _prevSelection;
 
-      if (_hoverNotifier.value != null) {
+      if (_hoverNotifier.value != null && mounted) {
         _hoverTimer?.cancel();
         _hoverNotifier.value = null;
       }
@@ -517,9 +522,13 @@ class _CodeForgeState extends State<CodeForge>
         _previousValue = text;
         (() async {
           final lspConfig = widget.lspConfig!;
-          await lspConfig.updateDocument(text);
+          await lspConfig.updateDocument(_filePath!, text);
           _scheduleSemantictokenRefresh();
-          final suggestion = await lspConfig.getCompletions(line, character);
+          final suggestion = await lspConfig.getCompletions(
+            _filePath,
+            line,
+            character,
+          );
           _suggestions = suggestion;
         })();
       }
@@ -774,7 +783,7 @@ class _CodeForgeState extends State<CodeForge>
     if (widget.lspConfig == null || !_lspReady) return;
 
     try {
-      final tokens = await widget.lspConfig!.getSemanticTokensFull();
+      final tokens = await widget.lspConfig!.getSemanticTokensFull(_filePath!);
       if (mounted) {
         setState(() {
           _semanticTokens = tokens;
@@ -795,6 +804,7 @@ class _CodeForgeState extends State<CodeForge>
     final character = cursor - lineStart;
 
     final actions = await widget.lspConfig!.getCodeActions(
+      filePath: _filePath!,
       startLine: line,
       startCharacter: character,
       endLine: line,
@@ -1376,404 +1386,423 @@ class _CodeForgeState extends State<CodeForge>
               child: RawScrollbar(
                 thumbVisibility: _isHovering,
                 controller: _hscrollController,
-                child: MouseRegion(
-                  onEnter: (event) {
-                    if (mounted) setState(() => _isHovering = true);
-                  },
-                  onExit: (event) {
-                    if (mounted) setState(() => _isHovering = false);
-                  },
-                  child: ValueListenableBuilder(
-                    valueListenable: _selectionActiveNotifier,
-                    builder: (context, selVal, child) {
-                      return TwoDimensionalScrollable(
-                        horizontalDetails: ScrollableDetails.horizontal(
-                          controller: _hscrollController,
-                          physics: selVal
-                              ? const NeverScrollableScrollPhysics()
-                              : const ClampingScrollPhysics(),
-                        ),
-                        verticalDetails: ScrollableDetails.vertical(
-                          controller: _vscrollController,
-                          physics: selVal
-                              ? const NeverScrollableScrollPhysics()
-                              : const ClampingScrollPhysics(),
-                        ),
-                        viewportBuilder: (_, voffset, hoffset) => CustomViewport(
-                          verticalOffset: voffset,
-                          verticalAxisDirection: AxisDirection.down,
-                          horizontalOffset: hoffset,
-                          horizontalAxisDirection: AxisDirection.right,
-                          mainAxis: Axis.vertical,
-                          delegate: TwoDimensionalChildBuilderDelegate(
-                            maxXIndex: 0,
-                            maxYIndex: 0,
-                            builder: (_, vic) {
-                              return Focus(
-                                focusNode: _focusNode,
-                                onKeyEvent: (node, event) {
-                                  if (event is KeyDownEvent ||
-                                      event is KeyRepeatEvent) {
-                                    final isShiftPressed = HardwareKeyboard
-                                        .instance
-                                        .isShiftPressed;
-                                    final isCtrlPressed =
-                                        HardwareKeyboard
-                                            .instance
-                                            .isControlPressed ||
-                                        HardwareKeyboard.instance.isMetaPressed;
-                                    if (_suggestionNotifier.value != null &&
-                                        _suggestionNotifier.value!.isNotEmpty) {
-                                      final suggestions =
-                                          _suggestionNotifier.value!;
-                                      switch (event.logicalKey) {
-                                        case LogicalKeyboardKey.arrowDown:
-                                          if (mounted) {
-                                            setState(() {
-                                              _sugSelIndex =
-                                                  (_sugSelIndex + 1) %
-                                                  suggestions.length;
-                                              _scrollToSelectedSuggestion();
-                                            });
-                                          }
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowUp:
-                                          if (mounted) {
-                                            setState(() {
-                                              _sugSelIndex =
-                                                  (_sugSelIndex -
-                                                      1 +
-                                                      suggestions.length) %
-                                                  suggestions.length;
-                                              _scrollToSelectedSuggestion();
-                                            });
-                                          }
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.enter:
-                                        case LogicalKeyboardKey.tab:
-                                          _acceptSuggestion();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.escape:
-                                          _suggestionNotifier.value = null;
-                                          return KeyEventResult.handled;
-                                        default:
-                                          break;
-                                      }
-                                    }
-
-                                    if (_lspActionNotifier.value != null &&
-                                        _lspActionOffsetNotifier.value !=
-                                            null &&
-                                        _lspActionNotifier.value!.isNotEmpty) {
-                                      final actions = _lspActionNotifier.value!;
-                                      switch (event.logicalKey) {
-                                        case LogicalKeyboardKey.arrowDown:
-                                          if (mounted) {
-                                            setState(() {
-                                              _actionSelIndex =
-                                                  (_actionSelIndex + 1) %
-                                                  actions.length;
-                                              _scrollToSelectedAction();
-                                            });
-                                          }
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowUp:
-                                          if (mounted) {
-                                            setState(() {
-                                              _actionSelIndex =
-                                                  (_actionSelIndex -
-                                                      1 +
-                                                      actions.length) %
-                                                  actions.length;
-                                              _scrollToSelectedAction();
-                                            });
-                                          }
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.enter:
-                                        case LogicalKeyboardKey.tab:
-                                          (() async {
-                                            await _acceptActions(
-                                              _lspActionNotifier
-                                                  .value![_actionSelIndex],
-                                            );
-                                          })();
-                                          _lspActionNotifier.value = null;
-                                          _lspActionOffsetNotifier.value = null;
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.escape:
-                                          _lspActionNotifier.value = null;
-                                          _lspActionOffsetNotifier.value = null;
-                                          return KeyEventResult.handled;
-                                        default:
-                                          break;
-                                      }
-                                    }
-
-                                    if (isCtrlPressed && isShiftPressed) {
-                                      switch (event.logicalKey) {
-                                        case LogicalKeyboardKey.arrowUp:
-                                          _moveLineUp();
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowDown:
-                                          _moveLineDown();
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowLeft:
-                                          _moveWordLeft(true);
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowRight:
-                                          _moveWordRight(true);
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        default:
-                                          break;
-                                      }
-                                    }
-
-                                    if (isCtrlPressed) {
-                                      switch (event.logicalKey) {
-                                        case LogicalKeyboardKey.keyC:
-                                          _controller.copy();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.keyX:
-                                          _controller.cut();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.keyV:
-                                          _controller.paste();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.keyA:
-                                          _controller.selectAll();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.keyD:
-                                          _duplicateLine();
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.keyZ:
-                                          if (_undoRedoController.canUndo) {
-                                            _undoRedoController.undo();
-                                            _commonKeyFunctions();
-                                          }
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.keyY:
-                                          if (_undoRedoController.canRedo) {
-                                            _undoRedoController.redo();
-                                            _commonKeyFunctions();
-                                          }
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.backspace:
-                                          _deleteWordBackward();
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.delete:
-                                          _deleteWordForward();
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowLeft:
-                                          _moveWordLeft(false);
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowRight:
-                                          _moveWordRight(false);
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.period:
-                                          (() async {
+                child: GestureDetector(
+                  onTap: _focusNode.requestFocus,
+                  child: MouseRegion(
+                    onEnter: (event) {
+                      if (mounted) setState(() => _isHovering = true);
+                    },
+                    onExit: (event) {
+                      if (mounted) setState(() => _isHovering = false);
+                    },
+                    child: ValueListenableBuilder(
+                      valueListenable: _selectionActiveNotifier,
+                      builder: (context, selVal, child) {
+                        return TwoDimensionalScrollable(
+                          horizontalDetails: ScrollableDetails.horizontal(
+                            controller: _hscrollController,
+                            physics: selVal
+                                ? const NeverScrollableScrollPhysics()
+                                : const ClampingScrollPhysics(),
+                          ),
+                          verticalDetails: ScrollableDetails.vertical(
+                            controller: _vscrollController,
+                            physics: selVal
+                                ? const NeverScrollableScrollPhysics()
+                                : const ClampingScrollPhysics(),
+                          ),
+                          viewportBuilder: (_, voffset, hoffset) => CustomViewport(
+                            verticalOffset: voffset,
+                            verticalAxisDirection: AxisDirection.down,
+                            horizontalOffset: hoffset,
+                            horizontalAxisDirection: AxisDirection.right,
+                            mainAxis: Axis.vertical,
+                            delegate: TwoDimensionalChildBuilderDelegate(
+                              maxXIndex: 0,
+                              maxYIndex: 0,
+                              builder: (_, vic) {
+                                return Focus(
+                                  focusNode: _focusNode,
+                                  onKeyEvent: (node, event) {
+                                    if (event is KeyDownEvent ||
+                                        event is KeyRepeatEvent) {
+                                      final isShiftPressed = HardwareKeyboard
+                                          .instance
+                                          .isShiftPressed;
+                                      final isCtrlPressed =
+                                          HardwareKeyboard
+                                              .instance
+                                              .isControlPressed ||
+                                          HardwareKeyboard
+                                              .instance
+                                              .isMetaPressed;
+                                      if (_suggestionNotifier.value != null &&
+                                          _suggestionNotifier
+                                              .value!
+                                              .isNotEmpty) {
+                                        final suggestions =
+                                            _suggestionNotifier.value!;
+                                        switch (event.logicalKey) {
+                                          case LogicalKeyboardKey.arrowDown:
+                                            if (mounted) {
+                                              setState(() {
+                                                _sugSelIndex =
+                                                    (_sugSelIndex + 1) %
+                                                    suggestions.length;
+                                                _scrollToSelectedSuggestion();
+                                              });
+                                            }
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowUp:
+                                            if (mounted) {
+                                              setState(() {
+                                                _sugSelIndex =
+                                                    (_sugSelIndex -
+                                                        1 +
+                                                        suggestions.length) %
+                                                    suggestions.length;
+                                                _scrollToSelectedSuggestion();
+                                              });
+                                            }
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.enter:
+                                          case LogicalKeyboardKey.tab:
+                                            _acceptSuggestion();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.escape:
                                             _suggestionNotifier.value = null;
-                                            await _fetchCodeActionsForCurrentPosition();
-                                          })();
-                                          return KeyEventResult.handled;
-                                        default:
-                                          break;
+                                            return KeyEventResult.handled;
+                                          default:
+                                            break;
+                                        }
                                       }
-                                    }
 
-                                    if (isShiftPressed && !isCtrlPressed) {
+                                      if (_lspActionNotifier.value != null &&
+                                          _lspActionOffsetNotifier.value !=
+                                              null &&
+                                          _lspActionNotifier
+                                              .value!
+                                              .isNotEmpty) {
+                                        final actions =
+                                            _lspActionNotifier.value!;
+                                        switch (event.logicalKey) {
+                                          case LogicalKeyboardKey.arrowDown:
+                                            if (mounted) {
+                                              setState(() {
+                                                _actionSelIndex =
+                                                    (_actionSelIndex + 1) %
+                                                    actions.length;
+                                                _scrollToSelectedAction();
+                                              });
+                                            }
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowUp:
+                                            if (mounted) {
+                                              setState(() {
+                                                _actionSelIndex =
+                                                    (_actionSelIndex -
+                                                        1 +
+                                                        actions.length) %
+                                                    actions.length;
+                                                _scrollToSelectedAction();
+                                              });
+                                            }
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.enter:
+                                          case LogicalKeyboardKey.tab:
+                                            (() async {
+                                              await _acceptActions(
+                                                _lspActionNotifier
+                                                    .value![_actionSelIndex],
+                                              );
+                                            })();
+                                            _lspActionNotifier.value = null;
+                                            _lspActionOffsetNotifier.value =
+                                                null;
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.escape:
+                                            _lspActionNotifier.value = null;
+                                            _lspActionOffsetNotifier.value =
+                                                null;
+                                            return KeyEventResult.handled;
+                                          default:
+                                            break;
+                                        }
+                                      }
+
+                                      if (isCtrlPressed && isShiftPressed) {
+                                        switch (event.logicalKey) {
+                                          case LogicalKeyboardKey.arrowUp:
+                                            _moveLineUp();
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowDown:
+                                            _moveLineDown();
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowLeft:
+                                            _moveWordLeft(true);
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowRight:
+                                            _moveWordRight(true);
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          default:
+                                            break;
+                                        }
+                                      }
+
+                                      if (isCtrlPressed) {
+                                        switch (event.logicalKey) {
+                                          case LogicalKeyboardKey.keyC:
+                                            _controller.copy();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.keyX:
+                                            _controller.cut();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.keyV:
+                                            _controller.paste();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.keyA:
+                                            _controller.selectAll();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.keyD:
+                                            _duplicateLine();
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.keyZ:
+                                            if (_undoRedoController.canUndo) {
+                                              _undoRedoController.undo();
+                                              _commonKeyFunctions();
+                                            }
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.keyY:
+                                            if (_undoRedoController.canRedo) {
+                                              _undoRedoController.redo();
+                                              _commonKeyFunctions();
+                                            }
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.backspace:
+                                            _deleteWordBackward();
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.delete:
+                                            _deleteWordForward();
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowLeft:
+                                            _moveWordLeft(false);
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowRight:
+                                            _moveWordRight(false);
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.period:
+                                            (() async {
+                                              _suggestionNotifier.value = null;
+                                              await _fetchCodeActionsForCurrentPosition();
+                                            })();
+                                            return KeyEventResult.handled;
+                                          default:
+                                            break;
+                                        }
+                                      }
+
+                                      if (isShiftPressed && !isCtrlPressed) {
+                                        switch (event.logicalKey) {
+                                          case LogicalKeyboardKey.tab:
+                                            _unindent();
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowLeft:
+                                            _controller.pressLetfArrowKey(
+                                              isShiftPressed: isShiftPressed,
+                                            );
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowRight:
+                                            _handleArrowRight(true);
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowUp:
+                                            _controller.pressUpArrowKey(
+                                              isShiftPressed: isShiftPressed,
+                                            );
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.arrowDown:
+                                            _controller.pressDownArrowKey(
+                                              isShiftPressed: isShiftPressed,
+                                            );
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.home:
+                                            _controller.pressHomeKey(
+                                              isShiftPressed: isShiftPressed,
+                                            );
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          case LogicalKeyboardKey.end:
+                                            _controller.pressEndKey(
+                                              isShiftPressed: isShiftPressed,
+                                            );
+                                            _commonKeyFunctions();
+                                            return KeyEventResult.handled;
+                                          default:
+                                            break;
+                                        }
+                                      }
+
                                       switch (event.logicalKey) {
-                                        case LogicalKeyboardKey.tab:
-                                          _unindent();
+                                        case LogicalKeyboardKey.backspace:
+                                          _controller.backspace();
+                                          if (_suggestionNotifier.value !=
+                                              null) {
+                                            _suggestionNotifier.value = null;
+                                          }
                                           _commonKeyFunctions();
                                           return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowLeft:
-                                          _controller.pressLetfArrowKey(
-                                            isShiftPressed: isShiftPressed,
-                                          );
+
+                                        case LogicalKeyboardKey.delete:
+                                          _controller.delete();
+                                          if (_suggestionNotifier.value !=
+                                              null) {
+                                            _suggestionNotifier.value = null;
+                                          }
                                           _commonKeyFunctions();
                                           return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowRight:
-                                          _handleArrowRight(true);
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
-                                        case LogicalKeyboardKey.arrowUp:
-                                          _controller.pressUpArrowKey(
-                                            isShiftPressed: isShiftPressed,
-                                          );
-                                          _commonKeyFunctions();
-                                          return KeyEventResult.handled;
+
                                         case LogicalKeyboardKey.arrowDown:
                                           _controller.pressDownArrowKey(
                                             isShiftPressed: isShiftPressed,
                                           );
                                           _commonKeyFunctions();
                                           return KeyEventResult.handled;
+
+                                        case LogicalKeyboardKey.arrowUp:
+                                          _controller.pressUpArrowKey(
+                                            isShiftPressed: isShiftPressed,
+                                          );
+                                          _commonKeyFunctions();
+                                          return KeyEventResult.handled;
+
+                                        case LogicalKeyboardKey.arrowRight:
+                                          _handleArrowRight(isShiftPressed);
+                                          _commonKeyFunctions();
+                                          return KeyEventResult.handled;
+
+                                        case LogicalKeyboardKey.arrowLeft:
+                                          _controller.pressLetfArrowKey(
+                                            isShiftPressed: isShiftPressed,
+                                          );
+                                          _commonKeyFunctions();
+                                          return KeyEventResult.handled;
+
                                         case LogicalKeyboardKey.home:
+                                          if (_suggestionNotifier.value !=
+                                              null) {
+                                            _suggestionNotifier.value = null;
+                                          }
                                           _controller.pressHomeKey(
                                             isShiftPressed: isShiftPressed,
                                           );
                                           _commonKeyFunctions();
                                           return KeyEventResult.handled;
+
                                         case LogicalKeyboardKey.end:
+                                          if (_suggestionNotifier.value !=
+                                              null) {
+                                            _suggestionNotifier.value = null;
+                                          }
                                           _controller.pressEndKey(
                                             isShiftPressed: isShiftPressed,
                                           );
                                           _commonKeyFunctions();
                                           return KeyEventResult.handled;
-                                        default:
+
+                                        case LogicalKeyboardKey.escape:
+                                          _hoverTimer?.cancel();
+                                          _contextMenuOffsetNotifier.value =
+                                              const Offset(-1, -1);
+                                          _aiNotifier.value = null;
+                                          _suggestionNotifier.value = null;
+                                          _hoverNotifier.value = null;
+                                          return KeyEventResult.handled;
+
+                                        case LogicalKeyboardKey.tab:
+                                          if (_aiNotifier.value != null) {
+                                            _acceptAiCompletion();
+                                          } else if (_suggestionNotifier
+                                                  .value ==
+                                              null) {
+                                            _indent();
+                                            _commonKeyFunctions();
+                                          }
+                                          return KeyEventResult.handled;
+
+                                        case LogicalKeyboardKey.enter:
+                                          if (_aiNotifier.value != null) {
+                                            _aiNotifier.value = null;
+                                          }
                                           break;
+                                        default:
                                       }
                                     }
-
-                                    switch (event.logicalKey) {
-                                      case LogicalKeyboardKey.backspace:
-                                        _controller.backspace();
-                                        if (_suggestionNotifier.value != null) {
-                                          _suggestionNotifier.value = null;
-                                        }
-                                        _commonKeyFunctions();
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.delete:
-                                        _controller.delete();
-                                        if (_suggestionNotifier.value != null) {
-                                          _suggestionNotifier.value = null;
-                                        }
-                                        _commonKeyFunctions();
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.arrowDown:
-                                        _controller.pressDownArrowKey(
-                                          isShiftPressed: isShiftPressed,
-                                        );
-                                        _commonKeyFunctions();
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.arrowUp:
-                                        _controller.pressUpArrowKey(
-                                          isShiftPressed: isShiftPressed,
-                                        );
-                                        _commonKeyFunctions();
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.arrowRight:
-                                        _handleArrowRight(isShiftPressed);
-                                        _commonKeyFunctions();
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.arrowLeft:
-                                        _controller.pressLetfArrowKey(
-                                          isShiftPressed: isShiftPressed,
-                                        );
-                                        _commonKeyFunctions();
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.home:
-                                        if (_suggestionNotifier.value != null) {
-                                          _suggestionNotifier.value = null;
-                                        }
-                                        _controller.pressHomeKey(
-                                          isShiftPressed: isShiftPressed,
-                                        );
-                                        _commonKeyFunctions();
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.end:
-                                        if (_suggestionNotifier.value != null) {
-                                          _suggestionNotifier.value = null;
-                                        }
-                                        _controller.pressEndKey(
-                                          isShiftPressed: isShiftPressed,
-                                        );
-                                        _commonKeyFunctions();
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.escape:
-                                        _hoverTimer?.cancel();
-                                        _contextMenuOffsetNotifier.value =
-                                            const Offset(-1, -1);
-                                        _aiNotifier.value = null;
-                                        _suggestionNotifier.value = null;
-                                        _hoverNotifier.value = null;
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.tab:
-                                        if (_aiNotifier.value != null) {
-                                          _acceptAiCompletion();
-                                        } else if (_suggestionNotifier.value ==
-                                            null) {
-                                          _indent();
-                                          _commonKeyFunctions();
-                                        }
-                                        return KeyEventResult.handled;
-
-                                      case LogicalKeyboardKey.enter:
-                                        if (_aiNotifier.value != null) {
-                                          _aiNotifier.value = null;
-                                        }
-                                        break;
-                                      default:
-                                    }
-                                  }
-                                  return KeyEventResult.ignored;
-                                },
-                                child: _CodeField(
-                                  context: context,
-                                  controller: _controller,
-                                  editorTheme: _editorTheme,
-                                  language: _language,
-                                  languageId: widget.lspConfig?.languageId,
-                                  lspConfig: widget.lspConfig,
-                                  semanticTokens: _semanticTokens,
-                                  semanticTokensVersion: _semanticTokensVersion,
-                                  innerPadding: widget.innerPadding,
-                                  vscrollController: _vscrollController,
-                                  hscrollController: _hscrollController,
-                                  focusNode: _focusNode,
-                                  readOnly: widget.readOnly,
-                                  caretBlinkController: _caretBlinkController,
-                                  textStyle: widget.textStyle,
-                                  enableFolding: widget.enableFolding,
-                                  enableGuideLines: widget.enableGuideLines,
-                                  enableGutter: widget.enableGutter,
-                                  enableGutterDivider:
-                                      widget.enableGutterDivider,
-                                  gutterStyle: _gutterStyle,
-                                  selectionStyle: _selectionStyle,
-                                  diagnostics: _diagnosticsNotifier.value,
-                                  isMobile: _isMobile,
-                                  selectionActiveNotifier:
-                                      _selectionActiveNotifier,
-                                  contextMenuOffsetNotifier:
-                                      _contextMenuOffsetNotifier,
-                                  hoverNotifier: _hoverNotifier,
-                                  lineWrap: widget.lineWrap,
-                                  offsetNotifier: _offsetNotifier,
-                                  aiNotifier: _aiNotifier,
-                                  aiOffsetNotifier: _aiOffsetNotifier,
-                                  isHoveringPopup: _isHoveringPopup,
-                                  suggestionNotifier: _suggestionNotifier,
-                                  aiCompletionTextStyle:
-                                      widget.aiCompletionTextStyle,
-                                  lspActionNotifier: _lspActionNotifier,
-                                  lspActionOffsetNotifier:
-                                      _lspActionOffsetNotifier,
-                                ),
-                              );
-                            },
+                                    return KeyEventResult.ignored;
+                                  },
+                                  child: _CodeField(
+                                    context: context,
+                                    controller: _controller,
+                                    editorTheme: _editorTheme,
+                                    language: _language,
+                                    languageId: widget.lspConfig?.languageId,
+                                    lspConfig: widget.lspConfig,
+                                    semanticTokens: _semanticTokens,
+                                    semanticTokensVersion:
+                                        _semanticTokensVersion,
+                                    innerPadding: widget.innerPadding,
+                                    vscrollController: _vscrollController,
+                                    hscrollController: _hscrollController,
+                                    focusNode: _focusNode,
+                                    readOnly: widget.readOnly,
+                                    caretBlinkController: _caretBlinkController,
+                                    textStyle: widget.textStyle,
+                                    enableFolding: widget.enableFolding,
+                                    enableGuideLines: widget.enableGuideLines,
+                                    enableGutter: widget.enableGutter,
+                                    enableGutterDivider:
+                                        widget.enableGutterDivider,
+                                    gutterStyle: _gutterStyle,
+                                    selectionStyle: _selectionStyle,
+                                    diagnostics: _diagnosticsNotifier.value,
+                                    isMobile: _isMobile,
+                                    selectionActiveNotifier:
+                                        _selectionActiveNotifier,
+                                    contextMenuOffsetNotifier:
+                                        _contextMenuOffsetNotifier,
+                                    hoverNotifier: _hoverNotifier,
+                                    lineWrap: widget.lineWrap,
+                                    offsetNotifier: _offsetNotifier,
+                                    aiNotifier: _aiNotifier,
+                                    aiOffsetNotifier: _aiOffsetNotifier,
+                                    isHoveringPopup: _isHoveringPopup,
+                                    suggestionNotifier: _suggestionNotifier,
+                                    aiCompletionTextStyle:
+                                        widget.aiCompletionTextStyle,
+                                    lspActionNotifier: _lspActionNotifier,
+                                    lspActionOffsetNotifier:
+                                        _lspActionOffsetNotifier,
+                                    filePath: _filePath,
+                                  ),
+                                );
+                              },
+                            ),
                           ),
-                        ),
-                      );
-                    },
+                        );
+                      },
+                    ),
                   ),
                 ),
               ),
@@ -1971,6 +2000,7 @@ class _CodeForgeState extends State<CodeForge>
 
                         if (lspConfig != null) {
                           hoverMessage = await lspConfig.getHover(
+                            _filePath!,
                             line,
                             character,
                           );
@@ -2403,7 +2433,7 @@ class _CodeForgeState extends State<CodeForge>
         }
 
         if (widget.lspConfig != null) {
-          await widget.lspConfig!.updateDocument(_controller.text);
+          await widget.lspConfig!.updateDocument(_filePath!, _controller.text);
         }
       }
       return;
@@ -2449,7 +2479,10 @@ class _CodeForgeState extends State<CodeForge>
               );
             }
             if (widget.lspConfig != null) {
-              await widget.lspConfig!.updateDocument(_controller.text);
+              await widget.lspConfig!.updateDocument(
+                _filePath!,
+                _controller.text,
+              );
             }
           }
         }
@@ -2539,6 +2572,7 @@ class _CodeField extends LeafRenderObjectWidget {
   final ValueNotifier<Offset?> aiOffsetNotifier, lspActionOffsetNotifier;
   final BuildContext context;
   final TextStyle? aiCompletionTextStyle;
+  final String? filePath;
 
   const _CodeField({
     required this.controller,
@@ -2569,6 +2603,7 @@ class _CodeField extends LeafRenderObjectWidget {
     required this.isHoveringPopup,
     required this.context,
     required this.lineWrap,
+    this.filePath,
     this.textStyle,
     this.languageId,
     this.lspConfig,
@@ -2614,6 +2649,7 @@ class _CodeField extends LeafRenderObjectWidget {
       lspActionNotifier: lspActionNotifier,
       lspActionOffsetNotifier: lspActionOffsetNotifier,
       aiCompletionTextStyle: aiCompletionTextStyle,
+      filePath: filePath,
     );
   }
 
@@ -2645,7 +2681,7 @@ class _CodeField extends LeafRenderObjectWidget {
 
 class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
   final CodeForgeController controller;
-  final String? languageId;
+  final String? languageId, filePath;
   final ScrollController vscrollController, hscrollController;
   final FocusNode focusNode;
   final AnimationController caretBlinkController;
@@ -2786,6 +2822,7 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     required List<LspErrors> diagnostics,
     this.languageId,
     this.lspConfig,
+    this.filePath,
     EdgeInsets? innerPadding,
     TextStyle? textStyle,
     TextStyle? aiCompletionTextStyle,
@@ -3810,11 +3847,14 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
 
     final contentHeight =
         visibleHeight + (innerPadding?.vertical ?? 0) + _extraSpaceToAdd;
-    final contentWidth = lineWrap
-        ? constraints.maxWidth.isFinite
+    final computedWidth = lineWrap
+        ? (constraints.maxWidth.isFinite
               ? constraints.maxWidth
-              : MediaQuery.of(context).size.width
+              : MediaQuery.of(context).size.width)
         : maxLineWidth + (innerPadding?.horizontal ?? 0) + _gutterWidth;
+
+    final minWidth = MediaQuery.of(context).size.width;
+    final contentWidth = max(computedWidth, minWidth);
 
     size = constraints.constrain(Size(contentWidth, contentHeight));
   }
@@ -4433,7 +4473,7 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
                   i;
             } on NoSuchMethodError {
               try {
-                final fileUri = Uri.file(lspConfig!.filePath).toString();
+                final fileUri = Uri.file(filePath!).toString();
                 return (item['edit']['changes'][fileUri][0]['range']['start']['line']
                         as int) ==
                     i;
@@ -5674,7 +5714,6 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
 
         _onetap.onTap = () {
           if (lspActionNotifier.value != null) {
-            lspActionNotifier.value == null;
             lspActionOffsetNotifier.value == null;
           }
           if (suggestionNotifier.value != null) {

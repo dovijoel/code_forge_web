@@ -119,3 +119,8 @@ This release establishes **CodeForge** as a powerful, production-ready code edit
 
 ## 1.2.1
 - suggestion/code actions persist on screen.
+
+## 1.3.0
+- FIX: Editor width had been determined by the width of the longest line, fixed it by using the viewport width.
+- FIX: Changed filePath based LSP initialization to workspace based approach to manage multiple files from a single server instance.
+- FIX: Tapping the end of the longest line won't focus the editor.
