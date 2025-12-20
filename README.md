@@ -360,6 +360,8 @@ Future<LspConfig> setupDartLsp() async {
     );
   }
 ```
+</details>
+
 ---
 <details>
 <summary><h2>🤖 AI Completion</h2></summary>
