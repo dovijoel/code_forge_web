@@ -1580,35 +1580,56 @@ class _CodeForgeState extends State<CodeForge>
                                             _controller.copy();
                                             return KeyEventResult.handled;
                                           case LogicalKeyboardKey.keyX:
+                                            if (widget.readOnly) {
+                                              return KeyEventResult.handled;
+                                            }
                                             _controller.cut();
                                             return KeyEventResult.handled;
                                           case LogicalKeyboardKey.keyV:
+                                            if (widget.readOnly) {
+                                              return KeyEventResult.handled;
+                                            }
                                             _controller.paste();
                                             return KeyEventResult.handled;
                                           case LogicalKeyboardKey.keyA:
                                             _controller.selectAll();
                                             return KeyEventResult.handled;
                                           case LogicalKeyboardKey.keyD:
+                                            if (widget.readOnly) {
+                                              return KeyEventResult.handled;
+                                            }
                                             _duplicateLine();
                                             _commonKeyFunctions();
                                             return KeyEventResult.handled;
                                           case LogicalKeyboardKey.keyZ:
+                                            if (widget.readOnly) {
+                                              return KeyEventResult.handled;
+                                            }
                                             if (_undoRedoController.canUndo) {
                                               _undoRedoController.undo();
                                               _commonKeyFunctions();
                                             }
                                             return KeyEventResult.handled;
                                           case LogicalKeyboardKey.keyY:
+                                            if (widget.readOnly) {
+                                              return KeyEventResult.handled;
+                                            }
                                             if (_undoRedoController.canRedo) {
                                               _undoRedoController.redo();
                                               _commonKeyFunctions();
                                             }
                                             return KeyEventResult.handled;
                                           case LogicalKeyboardKey.backspace:
+                                            if (widget.readOnly) {
+                                              return KeyEventResult.handled;
+                                            }
                                             _deleteWordBackward();
                                             _commonKeyFunctions();
                                             return KeyEventResult.handled;
                                           case LogicalKeyboardKey.delete:
+                                            if (widget.readOnly) {
+                                              return KeyEventResult.handled;
+                                            }
                                             _deleteWordForward();
                                             _commonKeyFunctions();
                                             return KeyEventResult.handled;
@@ -1634,6 +1655,9 @@ class _CodeForgeState extends State<CodeForge>
                                       if (isShiftPressed && !isCtrlPressed) {
                                         switch (event.logicalKey) {
                                           case LogicalKeyboardKey.tab:
+                                            if (widget.readOnly) {
+                                              return KeyEventResult.handled;
+                                            }
                                             _unindent();
                                             _commonKeyFunctions();
                                             return KeyEventResult.handled;
@@ -1678,6 +1702,9 @@ class _CodeForgeState extends State<CodeForge>
 
                                       switch (event.logicalKey) {
                                         case LogicalKeyboardKey.backspace:
+                                          if (widget.readOnly) {
+                                            return KeyEventResult.handled;
+                                          }
                                           _controller.backspace();
                                           if (_suggestionNotifier.value !=
                                               null) {
@@ -1687,6 +1714,9 @@ class _CodeForgeState extends State<CodeForge>
                                           return KeyEventResult.handled;
 
                                         case LogicalKeyboardKey.delete:
+                                          if (widget.readOnly) {
+                                            return KeyEventResult.handled;
+                                          }
                                           _controller.delete();
                                           if (_suggestionNotifier.value !=
                                               null) {
@@ -1753,6 +1783,9 @@ class _CodeForgeState extends State<CodeForge>
                                           return KeyEventResult.handled;
 
                                         case LogicalKeyboardKey.tab:
+                                          if (widget.readOnly) {
+                                            return KeyEventResult.handled;
+                                          }
                                           if (_aiNotifier.value != null) {
                                             _acceptAiCompletion();
                                           } else if (_suggestionNotifier
@@ -2044,13 +2077,11 @@ class _CodeForgeState extends State<CodeForge>
                             top:
                                 offset.dy +
                                 (widget.textStyle?.fontSize ?? 14) +
-                                10,
-                            left:
-                                offset.dx +
-                                (screenWidth < 700
-                                    ? screenWidth * 0.63
-                                    : screenWidth * 0.3) +
-                                8,
+                                10 +
+                                (screenWidth < 700 ? 400 : 0),
+                            left: screenWidth < 700
+                                ? offset.dx
+                                : offset.dx + screenWidth * 0.3 + 8,
                             child: ConstrainedBox(
                               constraints: BoxConstraints(
                                 maxWidth: 420,

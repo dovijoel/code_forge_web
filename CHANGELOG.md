@@ -132,3 +132,6 @@ This release establishes **CodeForge** as a powerful, production-ready code edit
 - FEATURE: Added LSP `completionItem/resolve` to show documentation for completion items.
 - FEATURE: Added LSP auto import.
 - FEATURE: Theme based dynamic color for suggestion popup.
+
+## 1.5.0
+- FIX: Backspace, delete, undo-redo, etc works on read-only mode.
