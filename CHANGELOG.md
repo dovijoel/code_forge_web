@@ -154,3 +154,9 @@ This release establishes **CodeForge** as a powerful, production-ready code edit
 - FIX: Removed cut, paste and other writing operations from read only mode.
 - FIX: Line wrap wasn't responsive on resizing the screen.
 - FIX: Suggestions persists on cursor movement.
+
+## 4.0.0
+- ENHANCEMENT: Enhanced `FindWordController` for efficient word searching.
+- FEATURE: Added new `finderBuilder` API to implement the find-replace serach bar.
+- FEATURE: Added keyboard shortcuts Ctrl + F and Ctrl + H to show the find-replace search bar.
+- FIX: Scroll doesn't work after selecting a word.

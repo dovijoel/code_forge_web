@@ -252,21 +252,6 @@ class FindController extends ChangeNotifier {
       match.end,
       replaceInputController.text,
     );
-
-    // After replacement, offsets change, so we must re-search.
-    // We want to move to the 'next' match relative to where we were.
-    // Since the current match is replaced, the "next" match in the list (index+1)
-    // effectively becomes the new match at 'index' or close to it,
-    // but simplified: just re-run find.
-
-    // We strive to select the next match after finding.
-
-    // Store current index to try and maintain relative position if possible,
-    // though usually "Replace" implies "Replace and Find Next".
-    // Let's just re-find via the listener which will trigger on text change.
-
-    // find() automatically sets _currentMatchIndex to the one closest to cursor.
-    // Since replaceRange puts cursor at end of replacement, find() should select the next one.
   }
 
   /// Replaces all matches with the text in [replaceInputController].

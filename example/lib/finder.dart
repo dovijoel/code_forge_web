@@ -50,7 +50,6 @@ class FindPanelView extends StatelessWidget implements PreferredSizeWidget {
             if (e.logicalKey == .tab &&
                 controller.isReplaceMode &&
                 controller.findInputFocusNode.hasFocus) {
-              // focus replace input, when focused to find input and replace mode is enabled
               controller.replaceInputFocusNode.requestFocus();
               return KeyEventResult.handled;
             }
@@ -60,13 +59,11 @@ class FindPanelView extends StatelessWidget implements PreferredSizeWidget {
             width: _kFindPanelWidth,
             decoration: BoxDecoration(
               color: Theme.of(context).colorScheme.surface,
-              // border: Border.all(color: Theme.of(context).colorScheme.outline),
               borderRadius: BorderRadius.circular(5),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                //arrow icon
                 IconButton(
                   icon: Icon(
                     controller.isReplaceMode
@@ -84,7 +81,7 @@ class FindPanelView extends StatelessWidget implements PreferredSizeWidget {
                     minHeight: preferredSize.height,
                     maxHeight: preferredSize.height,
                   ),
-                  tooltip: 'Close',
+                  tooltip: 'Toggle Replace',
                   onPressed: () {
                     controller.toggleReplaceMode();
                     // if (controller.isReplaceMode) {

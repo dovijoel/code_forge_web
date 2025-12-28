@@ -96,6 +96,14 @@
       <img src="https://raw.githubusercontent.com/heckmon/code_forge/refs/heads/main/gifs/cf_themes.gif" alt="Syntax Highlighting" style="width:100%;height:auto;" />
     </div>
   </div>
+  
+  <div style="flex: 0 1 50%; min-width:300px;">
+    <h3>🔍 Search and replace</h3>
+    <p>Search and replace words like in VSCode.</p>
+    <div style="text-align:center;">
+      <img src="https://raw.githubusercontent.com/heckmon/code_forge/refs/heads/main/gifs/findNreplace.gif" alt="Syntax Highlighting" style="width:100%;height:auto;" />
+    </div>
+  </div>
 </div>
 
 ### 🌟 More Features
@@ -142,7 +150,7 @@ Add CodeForge to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  code_forge: ^3.0.0
+  code_forge: ^4.0.0
 ```
 
 Then run:
@@ -826,6 +834,10 @@ CodeForge supports a variety of keyboard shortcuts for efficient editing:
 - **Shift+Arrow Keys** — Extend selection
 - **Shift+Home** — Select to line start
 - **Shift+End** — Select to line end
+
+## Search
+- **Ctrl + F** — Show search bar.
+- **Ctrl + H** — Show replace bar.
 
 </details>
 
