@@ -5971,7 +5971,9 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
   }
 
   void _selectWordAtOffset(int offset) {
-    _selectionActive = selectionActiveNotifier.value = true;
+    if (isMobile) {
+      _selectionActive = selectionActiveNotifier.value = true;
+    }
 
     final text = controller.text;
     int start = offset, end = offset;
