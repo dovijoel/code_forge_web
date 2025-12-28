@@ -80,41 +80,65 @@ class FindController extends ChangeNotifier {
     String pattern = query;
 
     if (!_isRegex) {
-      pattern = RegExp.escape(query);
+      pattern = RegExp.escape(pattern);
     }
 
     if (_matchWholeWord) {
-      // Look for word boundaries
-      pattern = '\\b$pattern\\b';
+      pattern = r'\b' + pattern + r'\b';
     }
 
     try {
-      final regExp = RegExp(pattern, caseSensitive: _caseSensitive);
+      final regExp = RegExp(
+        pattern,
+        caseSensitive: _caseSensitive,
+        multiLine: true,
+      );
+
       _matches = regExp.allMatches(text).toList();
     } catch (e) {
       // Invalid regex or pattern
       _matches = [];
-      debugPrint('FindController: Invalid regex pattern: $pattern. Error: $e');
+      _currentMatchIndex = -1;
+      _updateHighlights();
+      notifyListeners();
+      return;
     }
-
+    // break
     if (_matches.isEmpty) {
       _currentMatchIndex = -1;
-    } else {
-      // Try to find the match closest to the current cursor position
-      final currentSelectionStart = _codeController.selection.start;
-      int closestIndex = 0;
+      _updateHighlights();
+      notifyListeners();
+      return;
+    }
 
-      for (int i = 0; i < _matches.length; i++) {
-        final match = _matches[i];
-        if (match.start >= currentSelectionStart) {
-          closestIndex = i;
+    // Pick match closest to cursor (after cursor)
+    final cursor = _codeController.selection.start;
+    int index = 0;
+    bool found = false;
+
+    for (int i = 0; i < _matches.length; i++) {
+      if (_matches[i].start >= cursor) {
+        index = i;
+        found = true;
+        break;
+      }
+    }
+
+    // pick match closest to cursor (before cursor)
+    if (!found) {
+      for (int i = _matches.length - 1; i >= 0; i--) {
+        if (_matches[i].start < cursor) {
+          index = i;
+          found = true;
           break;
         }
       }
-      _currentMatchIndex = closestIndex;
     }
 
+    _currentMatchIndex = found ? index : 0;
+
     _updateHighlights();
+    notifyListeners();
   }
 
   /// Moves to the next match.
