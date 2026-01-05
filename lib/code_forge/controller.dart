@@ -45,6 +45,7 @@ class CodeForgeController implements DeltaTextInputClient {
   int? dirtyLine, _bufferLineIndex;
   String? _lastSentText;
   TextSelection? _lastSentSelection;
+  String? _lastTypedCharacter;
   UndoRedoController? _undoController;
   void Function(int lineNumber)? _toggleFoldCallback;
   VoidCallback? _foldAllCallback, _unfoldAllCallback;
@@ -286,6 +287,10 @@ class CodeForgeController implements DeltaTextInputClient {
   /// if the lspconfig is available and a valid server is configured, the [List<LspCompletion>] will be returned.
   /// else a [List<String>] with locally available words will be returned.
   List<dynamic>? get suggestions => suggestionsNotifier.value;
+
+  /// The last character that was typed by the user.
+  /// Returns an empty string if no character has been typed or if the last input was not a single character.
+  String get lastTypedCharacter => _lastTypedCharacter ?? '';
 
   /// Currently opened file.
   String? get openedFile => _openedFile;
@@ -828,6 +833,9 @@ class CodeForgeController implements DeltaTextInputClient {
       _lastSentText = null;
 
       if (delta is TextEditingDeltaInsertion) {
+        if (delta.textInserted.length == 1) {
+          _lastTypedCharacter = delta.textInserted;
+        }
         if (delta.textInserted.isNotEmpty && _isAlpha(delta.textInserted)) {
           typingDetected = true;
         }

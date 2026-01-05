@@ -356,18 +356,37 @@ sealed class LspConfig {
     return response['result'] ?? item;
   }
 
-  Future<LspSignatureHelps> signatureHelp(
+  /// Requests signature help information for the given position in a document.
+  ///
+  /// This method sends a 'textDocument/signatureHelp' request to the language server
+  /// with the specified file path, line, character position, and trigger context.
+  /// It processes the response to extract signature details, including the label,
+  /// documentation, parameters, and active indices.
+  ///
+  /// - [filePath]: The path to the file for which signature help is requested.
+  /// - [line]: The zero-based line number in the document.
+  /// - [character]: The zero-based character position in the line.
+  /// - [triggerKind]: The kind of trigger that initiated the signature help request
+  ///   (e.g., invoked, trigger character, or content change).
+  /// - [triggerCharacter]: An optional character that triggered the request, if applicable.
+  ///
+  /// Returns a [Future<LspSignatureHelps>] containing the signature help information,
+  /// including the active signature and parameter indices, label, documentation, and parameters.
+  /// If no signatures are available, default empty values are used.
+  Future<LspSignatureHelps> getSignatureHelp(
     String filePath,
     int line,
     int character,
     int triggerKind, {
     String? triggerCharacter,
+    bool isRetrigger = false,
   }) async {
     final commonParams = _commonParams(filePath, line, character);
     commonParams.addAll({
       'context': {
         'triggerKind': triggerKind,
         if (triggerCharacter != null) 'triggerCharacter': triggerCharacter,
+        'isRetrigger': isRetrigger,
       },
     });
     final response = await _sendRequest(
@@ -376,17 +395,46 @@ sealed class LspConfig {
     );
 
     final result = response['result'];
+
+    if (result == null) {
+      return LspSignatureHelps(
+        activeParameter: -1,
+        activeSignature: -1,
+        documentation: "",
+        label: "",
+        parameters: [],
+      );
+    }
+
     final signatures = result['signatures'];
     late final String label, doc;
     late final List<Map<String, dynamic>> parameters;
     if (signatures is List) {
       if (signatures.isNotEmpty) {
         label = (signatures[0]['label']) ?? "";
-        parameters =
-            ((signatures[0]['parameters'] as List?)
-                ?.cast<Map<String, dynamic>>()) ??
-            [];
-        doc = (signatures[0]['documentation']['value']) ?? "";
+        final rawParameters = signatures[0]['parameters'];
+        if (rawParameters is List) {
+          parameters = rawParameters.map((param) {
+            if (param is Map<String, dynamic>) {
+              return param;
+            } else if (param is String) {
+              return {'label': param};
+            } else {
+              return {'label': param['label'] ?? param.toString()};
+            }
+          }).toList();
+        } else {
+          parameters = [];
+        }
+
+        final docField = signatures[0]['documentation'];
+        if (docField is String) {
+          doc = docField;
+        } else if (docField is Map) {
+          doc = docField['value'] ?? "";
+        } else {
+          doc = "";
+        }
       } else {
         label = "";
         doc = "";
@@ -502,23 +550,6 @@ sealed class LspConfig {
     final result = response['result'];
     if (result is! List) return [];
     return result;
-  }
-
-  /// Retrieves signature help at the given position.
-  ///
-  /// Displays function signatures and highlights the active parameter.
-  /// Typically triggered when typing '(' or ','.
-  Future<Map<String, dynamic>> getSignatureHelp(
-    String filePath,
-    int line,
-    int character,
-  ) async {
-    final response = await _sendRequest(
-      method: 'textDocument/signatureHelp',
-      params: _commonParams(filePath, line, character),
-    );
-
-    return response['result'] ?? {};
   }
 
   /// Formats the entire document according to server rules.

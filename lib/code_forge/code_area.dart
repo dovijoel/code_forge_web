@@ -430,6 +430,12 @@ class _CodeForgeState extends State<CodeForge>
     _controllerListener = () {
       _resetCursorBlink();
 
+      if (_controller.lastTypedCharacter == '(') {
+        _isSignatureInvoked = true;
+      } else if (_controller.lastTypedCharacter == ')') {
+        _isSignatureInvoked = false;
+      }
+
       if (_isSignatureInvoked) {
         if (_controller.lspConfig != null) {
           (() async => await _callSignatureHelp())();
@@ -694,7 +700,7 @@ class _CodeForgeState extends State<CodeForge>
       final line = _controller.getLineAtOffset(cursorPosition);
       final lineStartOffset = _controller.getLineStartOffset(line);
       final character = cursorPosition - lineStartOffset;
-      _lspSignatureNotifier.value = await lspConfig.signatureHelp(
+      _lspSignatureNotifier.value = await lspConfig.getSignatureHelp(
         widget.filePath!,
         line,
         character,
@@ -713,43 +719,124 @@ class _CodeForgeState extends State<CodeForge>
             _controller.selection.start != _controller.selection.end;
 
         if (_isMobile) {
-          return Positioned(
-            left: offset.dx,
-            top: offset.dy - 60,
-            child: Material(
-              elevation: 4,
-              borderRadius: BorderRadius.circular(8),
-              color: _editorTheme['root']?.backgroundColor ?? Colors.grey[900],
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (hasSelection) ...[
-                    if (!_controller.readOnly)
-                      _buildContextMenuItem(
-                        'Cut',
-                        Icons.cut,
-                        () => _controller.cut(),
+          return TextSelectionToolbar(
+            anchorAbove: offset,
+            anchorBelow: Offset(offset.dx, offset.dy + 40),
+            toolbarBuilder: (BuildContext context, Widget child) {
+              return Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  color: _hoverDetailsStyle.backgroundColor,
+                ),
+                child: child,
+              );
+            },
+            children: [
+              if (hasSelection) ...[
+                if (!_controller.readOnly)
+                  TextSelectionToolbarTextButton(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    onPressed: () {
+                      _controller.cut();
+                      _contextMenuOffsetNotifier.value = const Offset(-1, -1);
+                    },
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.cut,
+                          size: 16,
+                          color: _editorTheme['root']?.color,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Cut',
+                          style: TextStyle(
+                            color: _editorTheme['root']?.color,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                TextSelectionToolbarTextButton(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  onPressed: () {
+                    _controller.copy();
+                    _contextMenuOffsetNotifier.value = const Offset(-1, -1);
+                  },
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.copy,
+                        size: 16,
+                        color: _editorTheme['root']?.color,
                       ),
-                    _buildContextMenuItem(
-                      'Copy',
-                      Icons.copy,
-                      () => _controller.copy(),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Copy',
+                        style: TextStyle(
+                          color: _editorTheme['root']?.color,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              if (!_controller.readOnly)
+                TextSelectionToolbarTextButton(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  onPressed: () async {
+                    await _controller.paste();
+                    _contextMenuOffsetNotifier.value = const Offset(-1, -1);
+                  },
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.paste,
+                        size: 16,
+                        color: _editorTheme['root']?.color,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Paste',
+                        style: TextStyle(
+                          color: _editorTheme['root']?.color,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              TextSelectionToolbarTextButton(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                onPressed: () {
+                  _controller.selectAll();
+                  _contextMenuOffsetNotifier.value = const Offset(-1, -1);
+                },
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.select_all,
+                      size: 16,
+                      color: _editorTheme['root']?.color,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Select All',
+                      style: TextStyle(
+                        color: _editorTheme['root']?.color,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
-                  if (!_controller.readOnly)
-                    _buildContextMenuItem(
-                      'Paste',
-                      Icons.paste,
-                      () async => _controller.paste(),
-                    ),
-                  _buildContextMenuItem(
-                    'Select All',
-                    Icons.select_all,
-                    () => _controller.selectAll(),
-                  ),
-                ],
+                ),
               ),
-            ),
+            ],
           );
         } else {
           return Positioned(
@@ -795,36 +882,6 @@ class _CodeForgeState extends State<CodeForge>
           );
         }
       },
-    );
-  }
-
-  Widget _buildContextMenuItem(
-    String label,
-    IconData icon,
-    VoidCallback onTap,
-  ) {
-    return InkWell(
-      onTap: () {
-        onTap();
-        _contextMenuOffsetNotifier.value = const Offset(-1, -1);
-      },
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 18, color: _editorTheme['root']?.color),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: TextStyle(
-                color: _editorTheme['root']?.color,
-                fontSize: 12,
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -1131,6 +1188,11 @@ class _CodeForgeState extends State<CodeForge>
                             _suggestionNotifier.value = null;
                             _lspSignatureNotifier.value = null;
                           },
+                          onDoubleTapDown: (details) {
+                            if (_controller.text.isNotEmpty) return;
+                            _contextMenuOffsetNotifier.value =
+                                details.localPosition;
+                          },
                           child: MouseRegion(
                             onEnter: (event) {
                               if (mounted) setState(() => _isHovering = true);
@@ -1226,6 +1288,10 @@ class _CodeForgeState extends State<CodeForge>
                                                             _extraText,
                                                           );
                                                     }
+                                                    setState(() {
+                                                      _isSignatureInvoked =
+                                                          true;
+                                                    });
                                                     return KeyEventResult
                                                         .handled;
                                                   case LogicalKeyboardKey
@@ -1824,22 +1890,114 @@ class _CodeForgeState extends State<CodeForge>
                                             ),
                                             child: RichText(
                                               text: (() {
-                                                final range =
-                                                    (signature.parameters[signature
-                                                                .activeParameter]['label']
-                                                            as List)
-                                                        .cast<int>();
                                                 final label = signature.label;
-                                                final firstPart = label
-                                                    .substring(0, range[0]);
-                                                final highlightPart = label
-                                                    .substring(
-                                                      range[0],
-                                                      range[1],
+                                                final activeParamIndex =
+                                                    signature.activeParameter;
+
+                                                if (activeParamIndex < 0 ||
+                                                    activeParamIndex >=
+                                                        signature
+                                                            .parameters
+                                                            .length) {
+                                                  return TextSpan(text: label);
+                                                }
+
+                                                final paramLabel = signature
+                                                    .parameters[activeParamIndex]['label'];
+
+                                                if (paramLabel is List &&
+                                                    paramLabel.length >= 2) {
+                                                  final range = paramLabel
+                                                      .cast<int>();
+                                                  final firstPart = label
+                                                      .substring(0, range[0]);
+                                                  final highlightPart = label
+                                                      .substring(
+                                                        range[0],
+                                                        range[1],
+                                                      );
+                                                  final finalPart = label
+                                                      .substring(range[1]);
+
+                                                  return TextSpan(
+                                                    style: TextStyle(
+                                                      fontSize:
+                                                          (widget
+                                                                  .textStyle
+                                                                  ?.fontSize ??
+                                                              15) +
+                                                          1.75,
+                                                      color:
+                                                          _editorTheme['root']
+                                                              ?.color,
+                                                    ),
+                                                    children: [
+                                                      TextSpan(text: firstPart),
+                                                      TextSpan(
+                                                        text: highlightPart,
+                                                        style: TextStyle(
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                          color: Colors.blue,
+                                                        ),
+                                                      ),
+                                                      TextSpan(text: finalPart),
+                                                    ],
+                                                  );
+                                                } else if (paramLabel
+                                                    is String) {
+                                                  final paramText = paramLabel;
+                                                  final paramIndex = label
+                                                      .indexOf(paramText);
+
+                                                  if (paramIndex >= 0) {
+                                                    final firstPart = label
+                                                        .substring(
+                                                          0,
+                                                          paramIndex,
+                                                        );
+                                                    final highlightPart =
+                                                        paramText;
+                                                    final finalPart = label
+                                                        .substring(
+                                                          paramIndex +
+                                                              paramText.length,
+                                                        );
+
+                                                    return TextSpan(
+                                                      style: TextStyle(
+                                                        fontSize:
+                                                            (widget
+                                                                    .textStyle
+                                                                    ?.fontSize ??
+                                                                15) +
+                                                            1.75,
+                                                        color:
+                                                            _editorTheme['root']
+                                                                ?.color,
+                                                      ),
+                                                      children: [
+                                                        TextSpan(
+                                                          text: firstPart,
+                                                        ),
+                                                        TextSpan(
+                                                          text: highlightPart,
+                                                          style: TextStyle(
+                                                            fontWeight:
+                                                                FontWeight.bold,
+                                                            color: Colors.blue,
+                                                          ),
+                                                        ),
+                                                        TextSpan(
+                                                          text: finalPart,
+                                                        ),
+                                                      ],
                                                     );
-                                                final finalPart = label
-                                                    .substring(range[1]);
+                                                  }
+                                                }
+
                                                 return TextSpan(
+                                                  text: label,
                                                   style: TextStyle(
                                                     fontSize:
                                                         (widget
@@ -1850,24 +2008,17 @@ class _CodeForgeState extends State<CodeForge>
                                                     color: _editorTheme['root']
                                                         ?.color,
                                                   ),
-                                                  children: [
-                                                    TextSpan(text: firstPart),
-                                                    TextSpan(
-                                                      text: highlightPart,
-                                                      style: TextStyle(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: Colors.blue,
-                                                      ),
-                                                    ),
-                                                    TextSpan(text: finalPart),
-                                                  ],
                                                 );
                                               })(),
                                             ),
                                           ),
                                           Divider(
-                                            color: _editorTheme['root']?.color,
+                                            color:
+                                                signature
+                                                    .documentation
+                                                    .isNotEmpty
+                                                ? _editorTheme['root']?.color
+                                                : Colors.transparent,
                                             thickness: 0.5,
                                           ),
                                           Padding(
@@ -2116,6 +2267,9 @@ class _CodeForgeState extends State<CodeForge>
                                                       _suggestionNotifier
                                                               .value =
                                                           null;
+                                                      _isSignatureInvoked =
+                                                          true;
+                                                      _callSignatureHelp();
                                                     });
                                                   }
                                                 },

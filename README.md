@@ -150,7 +150,7 @@ Add CodeForge to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  code_forge: ^4.1.0
+  code_forge: ^4.2.0
 ```
 
 Then run:
@@ -802,38 +802,39 @@ matchHighlightStyle: const MatchHighlightStyle(
 CodeForge supports a variety of keyboard shortcuts for efficient editing:
 
 ### Editing
-- **Ctrl+C** — Copy selected text
-- **Ctrl+X** — Cut selected text
-- **Ctrl+V** — Paste text
-- **Ctrl+A** — Select all text
-- **Ctrl+D** — Duplicate current line
-- **Ctrl+Z** — Undo last action
-- **Ctrl+Y** — Redo last action
-- **Ctrl+Backspace** — Delete word backward
-- **Ctrl+Delete** — Delete word forward
+- **Ctrl+C** — Copy selected text.
+- **Ctrl+X** — Cut selected text.
+- **Ctrl+V** — Paste text.
+- **Ctrl+A** — Select all text.
+- **Ctrl+D** — Duplicate current line.
+- **Ctrl+Z** — Undo last action.
+- **Ctrl+Y** — Redo last action.
+- **Ctrl+Backspace** — Delete word backward.
+- **Ctrl+Delete** — Delete word forward.
 
 ### Navigation
-- **Ctrl+Arrow Left** — Move cursor to previous word
-- **Ctrl+Arrow Right** — Move cursor to next word
-- **Ctrl+Shift+Arrow Left** — Select to previous word
-- **Ctrl+Shift+Arrow Right** — Select to next word
-- **Ctrl+Shift+Arrow Up** — Move current line up
-- **Ctrl+Shift+Arrow Down** — Move current line down
+- **Ctrl+Arrow Left** — Move cursor to previous word.
+- **Ctrl+Arrow Right** — Move cursor to next word.
+- **Ctrl+Shift+Arrow Left** — Select to previous word.
+- **Ctrl+Shift+Arrow Right** — Select to next word.
+- **Ctrl+Shift+Arrow Up** — Move current line up.
+- **Ctrl+Shift+Arrow Down** — Move current line down.
 
 ### Indentation
-- **Tab** — Indent current line or accept AI completion/suggestion
-- **Shift+Tab** — Unindent current line
+- **Tab** — Indent current line or accept AI completion/suggestion.
+- **Shift+Tab** — Unindent current line.
 
 ### Suggestions & AI Completion
-- **Ctrl+.** — Show available code actions
-- **Arrow Up/Down** — Navigate through suggestions
-- **Enter/Tab** — Accept current suggestion
-- **Escape** — Close suggestions or hover details
+- **Ctrl+.** — Show available LSP code actions.
+- **Ctrl + Shift + Space** — Show available LSP signature help.
+- **Arrow Up/Down** — Navigate through suggestions.
+- **Enter/Tab** — Accept current suggestion.
+- **Escape** — Close suggestions or hover details.
 
 ### Selection
-- **Shift+Arrow Keys** — Extend selection
-- **Shift+Home** — Select to line start
-- **Shift+End** — Select to line end
+- **Shift+Arrow Keys** — Extend selection.
+- **Shift+Home** — Select to line start.
+- **Shift+End** — Select to line end.
 
 ## Search
 - **Ctrl + F** — Show search bar.

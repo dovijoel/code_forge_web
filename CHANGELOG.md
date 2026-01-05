@@ -163,3 +163,7 @@ This release establishes **CodeForge** as a powerful, production-ready code edit
 
 ## 4.1.0
 - FEATURE: Added semantic highlight support for the custom protocol used by the `ccls` language server.
+
+## 4.2.0
+- FEATURE: Added LSP signature help.
+- ENHANCEMENT: Improved and responsive selection tool bar for mobile.
