@@ -35,7 +35,7 @@ sealed class LspConfig {
   List<String>? _serverTokenTypes;
   List<String>? _serverTokenModifiers;
 
-  bool isIntialized = false;
+  bool isInitialized = false;
 
   /// Stream of responses from the LSP server.
   /// Use this to listen for notifications like diagnostics.
@@ -143,7 +143,7 @@ sealed class LspConfig {
     );
 
     if (response['error'] != null) {
-      isIntialized = false;
+      isInitialized = false;
       throw Exception('Initialization failed: ${response['error']}');
     }
 
@@ -160,7 +160,7 @@ sealed class LspConfig {
     }
 
     await _sendNotification(method: 'initialized', params: {});
-    isIntialized = true;
+    isInitialized = true;
   }
 
   Map<String, dynamic> _commonParams(String filePath, int line, int character) {

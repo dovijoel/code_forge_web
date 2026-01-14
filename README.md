@@ -37,8 +37,8 @@
 >
 > CodeForge does **not** support Flutter web, as it relies on `dart:io` for core functionality. Web support may be considered in the future if dependencies allow.
 
-### What's new in 5.1.0
-- Scoll to the desired line using the `controller.scrollToLine(int line)` API.
+### What's new in 5.2.0
+- Greatly enhanced large text handling.
 
 ## ✨ Why CodeForge?
 
@@ -151,7 +151,7 @@ Add CodeForge to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  code_forge: ^5.1.0
+  code_forge: ^5.2.0
 ```
 
 Then run:
@@ -520,6 +520,19 @@ controller.toggleFold(lineNumber);
 controller.searchHighlights = [
   SearchHighlight(start: 0, end: 5, color: Colors.yellow),
 ];
+
+// Scoll to a line
+controller.scollToLine(int line);
+
+// Editor decorations
+controller.setGitDiffDecorations(
+  addedRanges: [(int startLine, int endLine), (int startline, int endLine), ... etc],
+  removedRanges: [same pattern as above],
+  modifiedRanges: [same pattern as above],
+  addedColor: const Color(0xFF4CAF50),
+  removedColor: const Color(0xFFE53935),
+  modifiedColor: const Color(0xFF2196F3),
+)
 ```
 
 ### GutterStyle
