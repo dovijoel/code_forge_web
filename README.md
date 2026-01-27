@@ -37,8 +37,9 @@
 >
 > CodeForge does **not** support Flutter web, as it relies on `dart:io` for core functionality. Web support may be considered in the future if dependencies allow.
 
-### What's new in 5.2.0
-- Greatly enhanced large text handling.
+> [!WARNING]
+>
+> The current version contains a critical bug causing the app to crash when handling large text. This issue was inadvertently introduced in version 5.1.0 and will be addressed in the upcoming major release, 6.0.0, scheduled for February 1-2.
 
 ## ✨ Why CodeForge?
 
