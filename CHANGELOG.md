@@ -198,3 +198,11 @@ This release establishes **CodeForge** as a powerful, production-ready code edit
 - FIX: Highlight glitch in ccls LSP server.
 - FEATURE: Added `enableKeybordSuggestions` and `keyboardType` parameters as requested in [#20](https://github.com/heckmon/code_forge/issues/20)
 - ENHANCEMENT: Enahanced large text handling by caching fold ranges and bracket matches.
+
+## 6.1.0
+- FEATURE: Added more public API methods to the controller.<br>
+    • `duplicateLine()`<br>
+    • `moveLineDown()`<br>
+    • `moveLineUp()`<br>
+    • `callSignatureHelp()`<br>
+- ENHANCEMENT: LSP suggestions color

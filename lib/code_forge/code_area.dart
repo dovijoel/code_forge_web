@@ -491,7 +491,7 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
 
       if (_isSignatureInvoked) {
         if (_controller.lspConfig != null) {
-          (() async => await _callSignatureHelp())();
+          (() async => await _controller.callSignatureHelp())();
         }
       } else if (_lspSignatureNotifier.value != null) {
         _lspSignatureNotifier.value = null;
@@ -597,31 +597,6 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
     return 'str|${item.toString()}';
   }
 
-  Color _getCompletionIconColor(CompletionItemType type) {
-    switch (type) {
-      case CompletionItemType.method:
-      case CompletionItemType.function:
-      case CompletionItemType.constructor:
-        return _suggestionStyle.methodIconColor ?? Color(0xFFDCDFE4);
-      case CompletionItemType.field:
-      case CompletionItemType.property:
-        return _suggestionStyle.propertyIconColor ?? Color(0xFF98C379);
-      case CompletionItemType.class_:
-      case CompletionItemType.interface:
-      case CompletionItemType.enum_:
-      case CompletionItemType.struct:
-        return _suggestionStyle.classIconColor ?? Color(0xFFE06C75);
-      case CompletionItemType.variable:
-      case CompletionItemType.value_:
-      case CompletionItemType.constant:
-        return _suggestionStyle.variableIconColor ?? Color(0xFF61AFEF);
-      case CompletionItemType.keyword:
-        return _suggestionStyle.keywordIconColor ?? Color(0xFFC678DD);
-      default:
-        return _suggestionStyle.textStyle.color ?? Colors.grey;
-    }
-  }
-
   Future<void> _fetchCodeActionsForCurrentPosition() async {
     if (_controller.lspConfig == null) return;
     final sel = _controller.selection;
@@ -712,22 +687,6 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
     } else {
       _controller.setSelectionSilently(
         TextSelection.collapsed(offset: newOffset),
-      );
-    }
-  }
-
-  Future<void> _callSignatureHelp() async {
-    final lspConfig = _controller.lspConfig;
-    if (lspConfig != null) {
-      final cursorPosition = _controller.selection.extentOffset;
-      final line = _controller.getLineAtOffset(cursorPosition);
-      final lineStartOffset = _controller.getLineStartOffset(line);
-      final character = cursorPosition - lineStartOffset;
-      _lspSignatureNotifier.value = await lspConfig.getSignatureHelp(
-        widget.filePath!,
-        line,
-        character,
-        1,
       );
     }
   }
@@ -1094,87 +1053,6 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
     );
   }
 
-  void _moveLineUp() {
-    if (_readOnly) return;
-    final selection = _controller.selection;
-    final text = _controller.text;
-    final selStart = selection.start;
-    final selEnd = selection.end;
-    final lineStart = selStart > 0
-        ? text.lastIndexOf('\n', selStart - 1) + 1
-        : 0;
-    int lineEnd = text.indexOf('\n', selEnd);
-    if (lineEnd == -1) lineEnd = text.length;
-    if (lineStart == 0) return;
-
-    final prevLineEnd = lineStart - 1;
-    final prevLineStart = text.lastIndexOf('\n', prevLineEnd - 1) + 1;
-    final prevLine = text.substring(prevLineStart, prevLineEnd);
-    final currentLines = text.substring(lineStart, lineEnd);
-
-    _controller.replaceRange(
-      prevLineStart,
-      lineEnd,
-      '$currentLines\n$prevLine',
-    );
-
-    final prevLineLen = prevLineEnd - prevLineStart;
-    final offsetDelta = prevLineLen + 1;
-    final newSelection = TextSelection(
-      baseOffset: selection.baseOffset - offsetDelta,
-      extentOffset: selection.extentOffset - offsetDelta,
-    );
-    _controller.setSelectionSilently(newSelection);
-  }
-
-  void _moveLineDown() {
-    if (_readOnly) return;
-    final selection = _controller.selection;
-    final text = _controller.text;
-    final selStart = selection.start;
-    final selEnd = selection.end;
-    final lineStart = text.lastIndexOf('\n', selStart - 1) + 1;
-    int lineEnd = text.indexOf('\n', selEnd);
-    if (lineEnd == -1) lineEnd = text.length;
-    final nextLineStart = lineEnd + 1;
-    if (nextLineStart >= text.length) return;
-    int nextLineEnd = text.indexOf('\n', nextLineStart);
-    if (nextLineEnd == -1) nextLineEnd = text.length;
-
-    final currentLines = text.substring(lineStart, lineEnd);
-    final nextLine = text.substring(nextLineStart, nextLineEnd);
-
-    _controller.replaceRange(
-      lineStart,
-      nextLineEnd,
-      '$nextLine\n$currentLines',
-    );
-
-    final offsetDelta = nextLine.length + 1;
-    final newSelection = TextSelection(
-      baseOffset: selection.baseOffset + offsetDelta,
-      extentOffset: selection.extentOffset + offsetDelta,
-    );
-    _controller.setSelectionSilently(newSelection);
-  }
-
-  void _duplicateLine() {
-    if (_readOnly) return;
-    final text = _controller.text;
-    final selection = _controller.selection;
-    final caret = selection.extentOffset;
-    final prevNewline = (caret > 0) ? text.lastIndexOf('\n', caret - 1) : -1;
-    final nextNewline = text.indexOf('\n', caret);
-    final lineStart = prevNewline == -1 ? 0 : prevNewline + 1;
-    final lineEnd = nextNewline == -1 ? text.length : nextNewline;
-    final lineText = text.substring(lineStart, lineEnd);
-
-    _controller.replaceRange(lineEnd, lineEnd, '\n$lineText');
-    _controller.setSelectionSilently(
-      TextSelection.collapsed(offset: lineEnd + 1),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final mediaQuery = MediaQuery.of(context);
@@ -1394,16 +1272,16 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                                                   setState(() {
                                                     _isSignatureInvoked = true;
                                                   });
-                                                  (() async =>
-                                                      await _callSignatureHelp())();
+                                                  (() async => await _controller
+                                                      .callSignatureHelp())();
                                                   return KeyEventResult.handled;
                                                 case LogicalKeyboardKey.arrowUp:
-                                                  _moveLineUp();
+                                                  _controller.moveLineUp();
                                                   _commonKeyFunctions();
                                                   return KeyEventResult.handled;
                                                 case LogicalKeyboardKey
                                                     .arrowDown:
-                                                  _moveLineDown();
+                                                  _controller.moveLineDown();
                                                   _commonKeyFunctions();
                                                   return KeyEventResult.handled;
                                                 case LogicalKeyboardKey
@@ -1472,7 +1350,7 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                                                     return KeyEventResult
                                                         .handled;
                                                   }
-                                                  _duplicateLine();
+                                                  _controller.duplicateLine();
                                                   _commonKeyFunctions();
                                                   return KeyEventResult.handled;
                                                 case LogicalKeyboardKey.keyZ:
@@ -2240,12 +2118,16 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                                               horizontal: 8,
                                               vertical: 2,
                                             ),
-                                            color: _sugSelIndex == indx
-                                                ? (_suggestionStyle
-                                                          .selectedBackgroundColor ??
-                                                      _suggestionStyle
-                                                          .focusColor)
-                                                : Colors.transparent,
+                                            decoration: BoxDecoration(
+                                              color: indx == _sugSelIndex
+                                                  ? (_suggestionStyle
+                                                            .selectedBackgroundColor ??
+                                                        _suggestionStyle
+                                                            .focusColor)
+                                                  : Colors.transparent,
+                                              borderRadius:
+                                                  BorderRadius.circular(3),
+                                            ),
                                             child: InkWell(
                                               canRequestFocus: false,
                                               hoverColor:
@@ -2279,7 +2161,8 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                                                     _suggestionNotifier.value =
                                                         null;
                                                     _isSignatureInvoked = true;
-                                                    _callSignatureHelp();
+                                                    _controller
+                                                        .callSignatureHelp();
                                                   });
                                                 }
                                               },
@@ -2289,27 +2172,7 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                                                 children: [
                                                   if (item
                                                       is LspCompletion) ...[
-                                                    SizedBox(
-                                                      width:
-                                                          _suggestionStyle
-                                                              .iconSize ??
-                                                          16,
-                                                      height:
-                                                          _suggestionStyle
-                                                              .iconSize ??
-                                                          16,
-                                                      child: Icon(
-                                                        item.icon.icon,
-                                                        color:
-                                                            _getCompletionIconColor(
-                                                              item.itemType,
-                                                            ),
-                                                        size:
-                                                            _suggestionStyle
-                                                                .iconSize ??
-                                                            16,
-                                                      ),
-                                                    ),
+                                                    item.icon,
                                                     const SizedBox(width: 8),
                                                     Expanded(
                                                       flex: 3,
@@ -2317,9 +2180,26 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                                                         item.label,
                                                         style:
                                                             _suggestionStyle
-                                                                .labelTextStyle ??
-                                                            _suggestionStyle
-                                                                .textStyle,
+                                                                .labelTextStyle
+                                                                ?.copyWith(
+                                                                  color:
+                                                                      _sugSelIndex ==
+                                                                          indx
+                                                                      ? Colors
+                                                                            .white
+                                                                      : _suggestionStyle
+                                                                            .labelTextStyle
+                                                                            ?.color,
+                                                                ) ??
+                                                            _suggestionStyle.textStyle.copyWith(
+                                                              color:
+                                                                  _sugSelIndex ==
+                                                                      indx
+                                                                  ? Colors.white
+                                                                  : _suggestionStyle
+                                                                        .textStyle
+                                                                        .color,
+                                                            ),
                                                         overflow: TextOverflow
                                                             .ellipsis,
                                                       ),
@@ -2900,16 +2780,19 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                                   return Tooltip(
                                     message: actionData[indx]['title'],
                                     child: Container(
+                                      decoration: BoxDecoration(
+                                        color: indx == _actionSelIndex
+                                            ? (_suggestionStyle
+                                                      .selectedBackgroundColor ??
+                                                  _suggestionStyle.focusColor)
+                                            : Colors.transparent,
+                                        borderRadius: BorderRadius.circular(3),
+                                      ),
                                       height: _suggestionStyle.itemHeight,
                                       padding: EdgeInsets.symmetric(
                                         horizontal: 8,
                                         vertical: 2,
                                       ),
-                                      color: indx == _actionSelIndex
-                                          ? (_suggestionStyle
-                                                    .selectedBackgroundColor ??
-                                                _suggestionStyle.focusColor)
-                                          : Colors.transparent,
                                       child: InkWell(
                                         hoverColor: _suggestionStyle.hoverColor,
                                         splashColor:
@@ -2958,8 +2841,26 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                                                 actionData[indx]['title'],
                                                 style:
                                                     _suggestionStyle
-                                                        .labelTextStyle ??
-                                                    _suggestionStyle.textStyle,
+                                                        .labelTextStyle
+                                                        ?.copyWith(
+                                                          color:
+                                                              indx ==
+                                                                  _actionSelIndex
+                                                              ? Colors.white
+                                                              : _suggestionStyle
+                                                                    .labelTextStyle
+                                                                    ?.color,
+                                                        ) ??
+                                                    _suggestionStyle.textStyle
+                                                        .copyWith(
+                                                          color:
+                                                              indx ==
+                                                                  _actionSelIndex
+                                                              ? Colors.white
+                                                              : _suggestionStyle
+                                                                    .textStyle
+                                                                    .color,
+                                                        ),
                                                 overflow: TextOverflow.ellipsis,
                                               ),
                                             ),

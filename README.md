@@ -37,13 +37,13 @@
 >
 > CodeForge does **not** support Flutter web, as it relies on `dart:io` for core functionality. Web support may be considered in the future if dependencies allow.
 
-## What's new in 6.0.0
-- FIX: [#15](https://github.com/heckmon/code_forge/issues/15)
-- FIX: [#16](https://github.com/heckmon/code_forge/issues/16)
-- FIX: [#18](https://github.com/heckmon/code_forge/issues/18)
-- FIX: Highlight glitch in ccls LSP server.
-- FEATURE: Added `enableKeybordSuggestions` and `keyboardType` parameters as requested in [#20](https://github.com/heckmon/code_forge/issues/20)
-- ENHANCEMENT: Enahanced large text handling by caching fold ranges and bracket matches.
+## What's new in 6.1.0
+- FEATURE: Added more public API methods to the controller.<br>
+    • `duplicateLine()`<br>
+    • `moveLineDown()`<br>
+    • `moveLineUp()`<br>
+    • `callSignatureHelp()`<br>
+- ENHANCEMENT: LSP suggestions style.
 
 ## ✨ Why CodeForge?
 
@@ -156,7 +156,7 @@ Add CodeForge to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  code_forge: ^6.0.0
+  code_forge: ^6.1.0
 ```
 
 Then run:
@@ -519,6 +519,7 @@ final controller = CodeForgeController();
 // Text operations
 controller.text = 'Hello, World!';
 String content = controller.text;
+controller.getLineText(int lineIndex);
 
 // Selection
 controller.selection = TextSelection(baseOffset: 0, extentOffset: 5);
@@ -527,6 +528,9 @@ controller.selection = TextSelection(baseOffset: 0, extentOffset: 5);
 int lineCount = controller.lineCount;
 String line = controller.getLineText(0);
 int lineStart = controller.getLineStartOffset(0);
+controller.duplicateLine();
+controller.moveLineDown()
+controller.moveLineUp()
 
 // Folding
 controller.foldAll();
@@ -549,8 +553,32 @@ controller.setGitDiffDecorations(
   addedColor: const Color(0xFF4CAF50),
   removedColor: const Color(0xFFE53935),
   modifiedColor: const Color(0xFF2196F3),
-)
+);
+
+controller.addLineDecoration(LineDecoration decoration);
+controller.removeLineDecoration();
+controller.addGutterDecoration(GutterDecoration decoration);
+controller.removeGutterDecoration();
+controller.clearGutterDecoration();
+controller.setGhostText(String text);
+controller.clearGhostText();
+
+// LSP features
+controller.callSignatureHelp();
+controller.getCodeAction();
+
+// Navigation
+controller.pressLeftArrowKey();
+controller.pressRightArrowKey();
+controller.pressUpArrowKey();
+controller.pressDownArrowKey();
+controller.pressHomeKey();
+controller.pressEndKey();
+controller.pressDocumentHome();
+controller.pressDocumentEndKey();
+
 ```
+There are more methods available in the CodeForgeController API. You can see the complete list [here](https://pub.dev/documentation/code_forge/latest/code_forge_controller/CodeForgeController-class.html#instance-methods)
 
 ### GutterStyle
 

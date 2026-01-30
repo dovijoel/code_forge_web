@@ -1119,6 +1119,93 @@ class CodeForgeController implements DeltaTextInputClient {
     }
   }
 
+  /// Moves the current line up by one line.
+  ///
+  /// If the selection spans multiple lines, all selected lines are moved.
+  /// The selection is adjusted accordingly after the move.
+  /// Does nothing if the line is already at the top or if the controller is read-only.
+  void moveLineUp() {
+    if (readOnly) return;
+    final selection = this.selection;
+    final text = this.text;
+    final selStart = selection.start;
+    final selEnd = selection.end;
+    final lineStart = selStart > 0
+        ? text.lastIndexOf('\n', selStart - 1) + 1
+        : 0;
+    int lineEnd = text.indexOf('\n', selEnd);
+    if (lineEnd == -1) lineEnd = text.length;
+    if (lineStart == 0) return;
+
+    final prevLineEnd = lineStart - 1;
+    final prevLineStart = text.lastIndexOf('\n', prevLineEnd - 1) + 1;
+    final prevLine = text.substring(prevLineStart, prevLineEnd);
+    final currentLines = text.substring(lineStart, lineEnd);
+
+    replaceRange(prevLineStart, lineEnd, '$currentLines\n$prevLine');
+
+    final prevLineLen = prevLineEnd - prevLineStart;
+    final offsetDelta = prevLineLen + 1;
+    final newSelection = TextSelection(
+      baseOffset: selection.baseOffset - offsetDelta,
+      extentOffset: selection.extentOffset - offsetDelta,
+    );
+    setSelectionSilently(newSelection);
+  }
+
+  /// Moves the current line down by one line.
+  ///
+  /// If the selection spans multiple lines, all selected lines are moved.
+  /// The selection is adjusted accordingly after the move.
+  /// Does nothing if the line is already at the bottom or if the controller is read-only.
+  void moveLineDown() {
+    if (readOnly) return;
+    final selection = this.selection;
+    final text = this.text;
+    final selStart = selection.start;
+    final selEnd = selection.end;
+    final lineStart = text.lastIndexOf('\n', selStart - 1) + 1;
+    int lineEnd = text.indexOf('\n', selEnd);
+    if (lineEnd == -1) lineEnd = text.length;
+    final nextLineStart = lineEnd + 1;
+    if (nextLineStart >= text.length) return;
+    int nextLineEnd = text.indexOf('\n', nextLineStart);
+    if (nextLineEnd == -1) nextLineEnd = text.length;
+
+    final currentLines = text.substring(lineStart, lineEnd);
+    final nextLine = text.substring(nextLineStart, nextLineEnd);
+
+    replaceRange(lineStart, nextLineEnd, '$nextLine\n$currentLines');
+
+    final offsetDelta = nextLine.length + 1;
+    final newSelection = TextSelection(
+      baseOffset: selection.baseOffset + offsetDelta,
+      extentOffset: selection.extentOffset + offsetDelta,
+    );
+    setSelectionSilently(newSelection);
+  }
+
+  /// Duplicates the current line or selected lines.
+  ///
+  /// If text is selected, duplicates the selected lines.
+  /// If no selection, duplicates the line at the cursor position.
+  /// The cursor is moved to the start of the duplicated line.
+  /// Does nothing if the controller is read-only.
+  void duplicateLine() {
+    if (readOnly) return;
+    final text = this.text;
+    final selection = this.selection;
+    final caret = selection.extentOffset;
+    final prevNewline = (caret > 0) ? text.lastIndexOf('\n', caret - 1) : -1;
+    final nextNewline = text.indexOf('\n', caret);
+    final lineStart = prevNewline == -1 ? 0 : prevNewline + 1;
+    final lineEnd = nextNewline == -1 ? text.length : nextNewline;
+    final lineText = text.substring(lineStart, lineEnd);
+
+    replaceRange(lineEnd, lineEnd, '\n$lineText');
+    setSelectionSilently(TextSelection.collapsed(offset: lineEnd + 1));
+  }
+
   @override
   void updateEditingValueWithDeltas(List<TextEditingDelta> textEditingDeltas) {
     if (readOnly) return;
@@ -2159,6 +2246,26 @@ class CodeForgeController implements DeltaTextInputClient {
       if (lspConfig != null) {
         await lspConfig!.updateDocument(openedFile!, text);
       }
+    }
+  }
+
+  /// Calls the [LSP signature help](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_signatureHelp) feature.
+  ///
+  /// This method requests signature help from the Language Server Protocol (LSP)
+  /// for the current cursor position, displaying available parameters and
+  /// highlighting the parameter in focus within function parentheses.
+  Future<void> callSignatureHelp() async {
+    if (lspConfig != null) {
+      final cursorPosition = selection.extentOffset;
+      final line = getLineAtOffset(cursorPosition);
+      final lineStartOffset = getLineStartOffset(line);
+      final character = cursorPosition - lineStartOffset;
+      signatureNotifier.value = await lspConfig!.getSignatureHelp(
+        openedFile!,
+        line,
+        character,
+        1,
+      );
     }
   }
 
