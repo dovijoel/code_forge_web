@@ -444,8 +444,10 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
     _controller.semanticTokens.addListener(_semanticTokensListener);
 
     _focusNode.addListener(() {
+      debugPrint('[CodeForge] Focus changed: hasFocus=${_focusNode.hasFocus}, readOnly=$_readOnly');
       if (_focusNode.hasFocus && !_readOnly) {
         if (_connection == null || !_connection!.attached) {
+          debugPrint('[CodeForge] Attaching TextInputConnection...');
           _connection = TextInput.attach(
             _controller,
             TextInputConfiguration(
@@ -466,6 +468,7 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
               selection: _controller.selection,
             ),
           );
+          debugPrint('[CodeForge] TextInputConnection attached and shown');
         }
       }
     });

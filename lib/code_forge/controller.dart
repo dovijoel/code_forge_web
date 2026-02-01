@@ -1561,11 +1561,16 @@ class CodeForgeController implements DeltaTextInputClient {
   @protected
   @override
   void updateEditingValueWithDeltas(List<TextEditingDelta> textEditingDeltas) {
-    if (readOnly) return;
+    debugPrint('[CodeForge Controller] updateEditingValueWithDeltas called with ${textEditingDeltas.length} deltas, readOnly=$readOnly');
+    if (readOnly) {
+      debugPrint('[CodeForge Controller] Skipping - editor is read-only');
+      return;
+    }
 
     bool typingDetected = false;
 
     for (final delta in textEditingDeltas) {
+      debugPrint('[CodeForge Controller] Processing delta: ${delta.runtimeType}');
       if (delta is TextEditingDeltaNonTextUpdate) {
         if (_lastSentSelection == null ||
             delta.selection != _lastSentSelection) {
