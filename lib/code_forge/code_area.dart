@@ -470,7 +470,9 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
       }
     });
 
-    Future.microtask(CustomIcons.loadAllCustomFonts);
+    // Note: Custom fonts are declared in pubspec.yaml under the flutter.fonts section.
+    // They are automatically registered at build time, so dynamic loading is not needed.
+    // The loadAllCustomFonts() call was removed to avoid "asset not found" errors on web.
 
     if (_filePath == null && _controller.lspConfig != null) {
       throw ArgumentError(
