@@ -1149,7 +1149,7 @@ class CustomIcons {
     };
     for (final entry in fonts.entries) {
       final loader = FontLoader(entry.key);
-      loader.addFont(rootBundle.load('packages/code_forge/${entry.value}'));
+      loader.addFont(rootBundle.load('packages/code_forge_web/${entry.value}'));
       await loader.load();
     }
   }
