@@ -1133,6 +1133,7 @@ class CustomIcons {
 
   /// Loads all custom icon fonts for the code_forge package.
   /// Call [CustomIcons.loadAllCustomFonts] before using any custom icons.
+  /// Errors during font loading are caught and logged to avoid breaking the editor.
   static Future<void> loadAllCustomFonts() async {
     final fonts = <String, String>{
       'Method': 'assets/icons/method.ttf',
@@ -1148,9 +1149,15 @@ class CustomIcons {
       'Field': 'assets/icons/field.ttf',
     };
     for (final entry in fonts.entries) {
-      final loader = FontLoader(entry.key);
-      loader.addFont(rootBundle.load('packages/code_forge_web/${entry.value}'));
-      await loader.load();
+      try {
+        final loader = FontLoader(entry.key);
+        loader.addFont(rootBundle.load('packages/code_forge_web/${entry.value}'));
+        await loader.load();
+      } catch (e) {
+        // Font loading may fail in test environments or when assets are not available
+        // Log error but don't break the editor
+        debugPrint('Failed to load font ${entry.key}: $e');
+      }
     }
   }
 }
