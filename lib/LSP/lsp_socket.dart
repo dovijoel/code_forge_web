@@ -32,6 +32,7 @@ class LspSocketConfig extends LspConfig {
     required super.workspacePath,
     required super.languageId,
     required this.serverUrl,
+    super.capabilities,
     super.disableWarning,
     super.disableError,
   }) : _channel = WebSocketChannel.connect(Uri.parse(serverUrl));

@@ -19,6 +19,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
 /// A highly customizable code editor widget for Flutter.
 ///
@@ -184,6 +185,11 @@ class CodeForge extends StatefulWidget {
   /// Defaults to [TextInputType.multiline]
   final TextInputType keyboardType;
 
+  /// If set to true, deleting the first line of a folded block will delete the entire folded region,
+  /// else only the first line gets deleted and the rest of the block stays safe.
+  /// Defauts to false.
+  final bool deleteFoldRangeOnDeletingFirstLine;
+
   /// Builder for a custom Finder widget.
   ///
   /// This builder is called to create the finder/search widget. It provides
@@ -220,6 +226,7 @@ class CodeForge extends StatefulWidget {
     this.keyboardType = TextInputType.multiline,
     this.enableGutter = true,
     this.enableGutterDivider = false,
+    this.deleteFoldRangeOnDeletingFirstLine = false,
     this.selectionStyle,
     this.gutterStyle,
     this.suggestionStyle,
@@ -259,6 +266,7 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
   late final FindController _findController;
   late final VoidCallback _semanticTokensListener;
   late final VoidCallback _controllerListener;
+  late final bool _deleteFoldRangeOnDeletingFirstLine;
   final ValueNotifier<Offset> _offsetNotifier = ValueNotifier(Offset(0, 0));
   final ValueNotifier<Offset?> _lspActionOffsetNotifier = ValueNotifier(null);
   final _isMobile = Platform.isAndroid || Platform.isIOS;
@@ -269,6 +277,7 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
   TextInputConnection? _connection;
   StreamSubscription? _lspResponsesSubscription;
   bool _isHovering = false, _isSignatureInvoked = false;
+  bool _isMobileSuggActive = false;
   List<LspSemanticToken>? _semanticTokens;
   List<Map<String, dynamic>> _extraText = [];
   int _semanticTokensVersion = 0;
@@ -302,7 +311,11 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
     _undoRedoController = widget.undoController ?? UndoRedoController();
     _filePath = widget.filePath;
     _readOnly = widget.readOnly;
+    _deleteFoldRangeOnDeletingFirstLine =
+        widget.deleteFoldRangeOnDeletingFirstLine;
     _controller.setUndoController(_undoRedoController);
+    _controller.deleteFoldRangeOnDeletingFirstLine =
+        _deleteFoldRangeOnDeletingFirstLine;
 
     if (widget.readOnly && !_controller.readOnly) {
       _controller.readOnly = true;
@@ -340,7 +353,7 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
             );
             return hsl.withLightness(newLightness).toColor();
           })(),
-          focusColor: Color(0xff024281),
+          focusColor: ui.Color.fromARGB(108, 2, 66, 129),
           hoverColor: Colors.grey.withAlpha(15),
           splashColor: Colors.blueAccent.withAlpha(50),
           selectedBackgroundColor: Color(0xFF094771),
@@ -482,6 +495,14 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
 
     _controllerListener = () {
       _resetCursorBlink();
+
+      _isMobileSuggActive = _controller.currentlySelectedSuggestion != null;
+
+      if (_readOnly != _controller.readOnly) {
+        setState(() {
+          _readOnly = _controller.readOnly;
+        });
+      }
 
       if (_controller.lastTypedCharacter == '(') {
         _isSignatureInvoked = true;
@@ -797,7 +818,6 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 onPressed: () {
                   _controller.selectAll();
-                  _contextMenuOffsetNotifier.value = const Offset(-1, -1);
                 },
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -1136,6 +1156,42 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                                       return Focus(
                                         focusNode: _focusNode,
                                         onKeyEvent: (node, event) {
+                                          final isCtrlAltPressed =
+                                              (HardwareKeyboard
+                                                      .instance
+                                                      .isControlPressed ||
+                                                  HardwareKeyboard
+                                                      .instance
+                                                      .isMetaPressed) &&
+                                              HardwareKeyboard
+                                                  .instance
+                                                  .isAltPressed;
+
+                                          if (event is KeyDownEvent &&
+                                              isCtrlAltPressed &&
+                                              !_controller.inlayHintsVisible) {
+                                            _controller.showInlayHints();
+                                            return KeyEventResult.handled;
+                                          }
+
+                                          if (event is KeyUpEvent &&
+                                              _controller.inlayHintsVisible) {
+                                            final isStillCtrlAlt =
+                                                (HardwareKeyboard
+                                                        .instance
+                                                        .isControlPressed ||
+                                                    HardwareKeyboard
+                                                        .instance
+                                                        .isMetaPressed) &&
+                                                HardwareKeyboard
+                                                    .instance
+                                                    .isAltPressed;
+                                            if (!isStillCtrlAlt) {
+                                              _controller.hideInlayHints();
+                                              return KeyEventResult.handled;
+                                            }
+                                          }
+
                                           if (event is KeyDownEvent ||
                                               event is KeyRepeatEvent) {
                                             final isShiftPressed =
@@ -1945,6 +2001,7 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                           }
                           if (sugg == null || sugg.isEmpty) {
                             _sugSelIndex = 0;
+                            _controller.currentlySelectedSuggestion = null;
                             return SizedBox.shrink();
                           }
                           final completionScrlCtrl = ScrollController();
@@ -1982,387 +2039,442 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                           if (adjustedTop < 0) {
                             adjustedTop = 0;
                           }
-                          return Stack(
-                            children: [
-                              Positioned(
-                                width: suggestionWidth,
-                                top: adjustedTop,
-                                left: adjustedLeft,
-                                child: ConstrainedBox(
-                                  constraints: BoxConstraints(
-                                    maxHeight: 400,
-                                    maxWidth: 400,
-                                    minWidth: 70,
-                                  ),
-                                  child: Card(
-                                    shape: _suggestionStyle.shape,
-                                    elevation: _suggestionStyle.elevation,
-                                    color: _suggestionStyle.backgroundColor,
-                                    margin: EdgeInsets.zero,
-                                    child: RawScrollbar(
-                                      thumbVisibility: true,
-                                      thumbColor: _editorTheme['root']!.color!
-                                          .withAlpha(80),
-                                      interactive: true,
-                                      controller: _suggScrollController,
-                                      child: ListView.builder(
-                                        itemExtent:
-                                            _suggestionStyle.itemHeight ?? 24.0,
-                                        controller: _suggScrollController,
-                                        padding: EdgeInsets.zero,
-                                        shrinkWrap: true,
-                                        itemCount: sugg.length,
-                                        itemBuilder: (_, indx) {
-                                          final item = sugg[indx];
-                                          if (item is LspCompletion &&
-                                              indx == _sugSelIndex) {
-                                            final key = _getSuggestionCacheKey(
-                                              item,
-                                            );
-                                            if (!_suggestionDetailsCache
-                                                    .containsKey(key) &&
-                                                _controller.lspConfig != null) {
-                                              (() async {
-                                                try {
-                                                  final data = await _controller
-                                                      .lspConfig!
-                                                      .resolveCompletionItem(
-                                                        item.completionItem,
-                                                      );
-                                                  final mdText =
-                                                      "${data['detail'] ?? ''}\n${(() {
-                                                        final doc = data['documentation'];
-                                                        if (doc == null) {
-                                                          return '';
-                                                        }
+                          return ValueListenableBuilder(
+                            valueListenable:
+                                _controller.selectedSuggestionNotifier,
+                            builder: (context, selected, child) {
+                              return Stack(
+                                children: [
+                                  Positioned(
+                                    width: suggestionWidth,
+                                    top: adjustedTop,
+                                    left: adjustedLeft,
+                                    child: ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        maxHeight: 400,
+                                        maxWidth: 400,
+                                        minWidth: 70,
+                                      ),
+                                      child: Card(
+                                        shape: _suggestionStyle.shape,
+                                        elevation: _suggestionStyle.elevation,
+                                        color: _suggestionStyle.backgroundColor,
+                                        margin: EdgeInsets.zero,
+                                        child: RawScrollbar(
+                                          thumbVisibility: true,
+                                          thumbColor: _editorTheme['root']!
+                                              .color!
+                                              .withAlpha(80),
+                                          interactive: true,
+                                          controller: _suggScrollController,
+                                          child: ListView.builder(
+                                            itemExtent:
+                                                _suggestionStyle.itemHeight ??
+                                                24.0,
+                                            controller: _suggScrollController,
+                                            padding: EdgeInsets.zero,
+                                            shrinkWrap: true,
+                                            itemCount: sugg.length,
+                                            itemBuilder: (_, indx) {
+                                              final item = sugg[indx];
+                                              if ((item is LspCompletion) &&
+                                                  (indx == _sugSelIndex ||
+                                                      (_isMobile &&
+                                                          _isMobileSuggActive))) {
+                                                final key =
+                                                    _getSuggestionCacheKey(
+                                                      item,
+                                                    );
+                                                if (!_suggestionDetailsCache
+                                                        .containsKey(key) &&
+                                                    _controller.lspConfig !=
+                                                        null) {
+                                                  (() async {
+                                                    try {
+                                                      final data = await _controller
+                                                          .lspConfig!
+                                                          .resolveCompletionItem(
+                                                            item.completionItem,
+                                                          );
+                                                      final mdText =
+                                                          "${data['detail'] ?? ''}\n${(() {
+                                                            final doc = data['documentation'];
+                                                            if (doc == null) {
+                                                              return '';
+                                                            }
 
-                                                        if (doc is Map<String, dynamic> && doc.containsKey('value')) {
-                                                          return doc['value'];
-                                                        }
+                                                            if (doc is Map<String, dynamic> && doc.containsKey('value')) {
+                                                              return doc['value'];
+                                                            }
 
-                                                        return doc;
-                                                      })()}";
-                                                  if (!mounted) return;
-                                                  setState(() {
-                                                    final edits =
-                                                        data['additionalTextEdits'];
-                                                    if (edits is List) {
-                                                      try {
-                                                        _extraText = edits
-                                                            .map(
-                                                              (e) =>
+                                                            return doc;
+                                                          })()}";
+                                                      if (!mounted) return;
+                                                      setState(() {
+                                                        final edits =
+                                                            data['additionalTextEdits'];
+                                                        if (edits is List) {
+                                                          try {
+                                                            _extraText = edits
+                                                                .map(
+                                                                  (e) =>
+                                                                      Map<
+                                                                        String,
+                                                                        dynamic
+                                                                      >.from(
+                                                                        e as Map,
+                                                                      ),
+                                                                )
+                                                                .toList();
+                                                          } catch (_) {
+                                                            _extraText = edits
+                                                                .cast<
                                                                   Map<
                                                                     String,
                                                                     dynamic
-                                                                  >.from(
-                                                                    e as Map,
-                                                                  ),
-                                                            )
-                                                            .toList();
-                                                      } catch (_) {
-                                                        _extraText = edits
-                                                            .cast<
-                                                              Map<
-                                                                String,
-                                                                dynamic
-                                                              >
-                                                            >();
-                                                      }
-                                                    } else {
-                                                      _extraText = [];
-                                                    }
-                                                    _suggestionDetailsCache[key] =
-                                                        mdText;
-                                                    _selectedSuggestionMd =
-                                                        mdText;
-                                                  });
-                                                } catch (e) {
-                                                  debugPrint(
-                                                    "Completion Resolve failed: ${e.toString()}",
-                                                  );
-                                                }
-                                              })();
-                                            } else if (_suggestionDetailsCache
-                                                .containsKey(key)) {
-                                              final cached =
-                                                  _suggestionDetailsCache[key];
-                                              if (_selectedSuggestionMd !=
-                                                  cached) {
-                                                WidgetsBinding.instance
-                                                    .addPostFrameCallback((_) {
-                                                      if (!mounted) return;
-                                                      setState(() {
+                                                                  >
+                                                                >();
+                                                          }
+                                                        } else {
+                                                          _extraText = [];
+                                                        }
+                                                        _suggestionDetailsCache[key] =
+                                                            mdText;
                                                         _selectedSuggestionMd =
-                                                            cached;
+                                                            mdText;
                                                       });
-                                                    });
-                                              }
-                                            }
-                                          } else if (indx == _sugSelIndex &&
-                                              item is! LspCompletion) {
-                                            if (_selectedSuggestionMd != null) {
-                                              WidgetsBinding.instance
-                                                  .addPostFrameCallback((_) {
-                                                    if (!mounted) return;
-                                                    setState(() {
-                                                      _selectedSuggestionMd =
-                                                          null;
-                                                    });
-                                                  });
-                                            }
-                                          }
-
-                                          return Container(
-                                            height: _suggestionStyle.itemHeight,
-                                            padding: EdgeInsets.symmetric(
-                                              horizontal: 8,
-                                              vertical: 2,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: indx == _sugSelIndex
-                                                  ? (_suggestionStyle
-                                                            .selectedBackgroundColor ??
-                                                        _suggestionStyle
-                                                            .focusColor)
-                                                  : Colors.transparent,
-                                              borderRadius:
-                                                  BorderRadius.circular(3),
-                                            ),
-                                            child: InkWell(
-                                              canRequestFocus: false,
-                                              hoverColor:
-                                                  _suggestionStyle.hoverColor,
-                                              focusColor:
-                                                  _suggestionStyle.focusColor,
-                                              splashColor:
-                                                  _suggestionStyle.splashColor,
-                                              borderRadius:
-                                                  BorderRadius.circular(3),
-                                              onTap: () {
-                                                if (mounted) {
-                                                  setState(() {
-                                                    _sugSelIndex = indx;
-                                                    final text =
-                                                        item is LspCompletion
-                                                        ? item.label
-                                                        : item as String;
-                                                    _controller
-                                                        .insertAtCurrentCursor(
-                                                          text,
-                                                          replaceTypedChar:
-                                                              true,
-                                                        );
-                                                    if (_extraText.isNotEmpty) {
-                                                      _controller
-                                                          .applyWorkspaceEdit(
-                                                            _extraText,
-                                                          );
+                                                    } catch (e) {
+                                                      debugPrint(
+                                                        "Completion Resolve failed: ${e.toString()}",
+                                                      );
                                                     }
-                                                    _suggestionNotifier.value =
-                                                        null;
-                                                    _isSignatureInvoked = true;
-                                                    _controller
-                                                        .callSignatureHelp();
-                                                  });
+                                                  })();
+                                                } else if (_suggestionDetailsCache
+                                                    .containsKey(key)) {
+                                                  final cached =
+                                                      _suggestionDetailsCache[key];
+                                                  if (_selectedSuggestionMd !=
+                                                      cached) {
+                                                    WidgetsBinding.instance
+                                                        .addPostFrameCallback((
+                                                          _,
+                                                        ) {
+                                                          if (!mounted) return;
+                                                          setState(() {
+                                                            _selectedSuggestionMd =
+                                                                cached;
+                                                          });
+                                                        });
+                                                  }
                                                 }
-                                              },
-                                              child: Row(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.center,
-                                                children: [
-                                                  if (item
-                                                      is LspCompletion) ...[
-                                                    item.icon,
-                                                    const SizedBox(width: 8),
-                                                    Expanded(
-                                                      flex: 3,
-                                                      child: Text(
-                                                        item.label,
-                                                        style:
+                                              } else if ((item
+                                                      is! LspCompletion) &&
+                                                  (indx == _sugSelIndex ||
+                                                      (_isMobile &&
+                                                          _isMobileSuggActive))) {
+                                                if (_selectedSuggestionMd !=
+                                                    null) {
+                                                  WidgetsBinding.instance
+                                                      .addPostFrameCallback((
+                                                        _,
+                                                      ) {
+                                                        if (!mounted) return;
+                                                        setState(() {
+                                                          _selectedSuggestionMd =
+                                                              null;
+                                                        });
+                                                      });
+                                                }
+                                              }
+
+                                              return Container(
+                                                height:
+                                                    _suggestionStyle.itemHeight,
+                                                padding: EdgeInsets.symmetric(
+                                                  horizontal: 8,
+                                                  vertical: 2,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color:
+                                                      ((!_isMobile &&
+                                                              (indx ==
+                                                                  _sugSelIndex)) ||
+                                                          _controller
+                                                                  .currentlySelectedSuggestion ==
+                                                              indx)
+                                                      ? (_suggestionStyle
+                                                                .selectedBackgroundColor ??
                                                             _suggestionStyle
-                                                                .labelTextStyle
-                                                                ?.copyWith(
+                                                                .focusColor)
+                                                      : Colors.transparent,
+                                                  borderRadius:
+                                                      BorderRadius.circular(3),
+                                                ),
+                                                child: InkWell(
+                                                  canRequestFocus: false,
+                                                  hoverColor: _suggestionStyle
+                                                      .hoverColor,
+                                                  focusColor: _suggestionStyle
+                                                      .focusColor,
+                                                  splashColor: _suggestionStyle
+                                                      .splashColor,
+                                                  borderRadius:
+                                                      BorderRadius.circular(3),
+                                                  onTap: () {
+                                                    if (mounted) {
+                                                      setState(() {
+                                                        if (_isMobileSuggActive) {
+                                                          _controller
+                                                                  .currentlySelectedSuggestion =
+                                                              indx;
+                                                        } else {
+                                                          _sugSelIndex = indx;
+                                                        }
+                                                        final text =
+                                                            item
+                                                                is LspCompletion
+                                                            ? item.label
+                                                            : item as String;
+                                                        _controller
+                                                            .insertAtCurrentCursor(
+                                                              text,
+                                                              replaceTypedChar:
+                                                                  true,
+                                                            );
+                                                        if (_extraText
+                                                            .isNotEmpty) {
+                                                          _controller
+                                                              .applyWorkspaceEdit(
+                                                                _extraText,
+                                                              );
+                                                        }
+                                                        _suggestionNotifier
+                                                                .value =
+                                                            null;
+                                                        _isSignatureInvoked =
+                                                            true;
+                                                        _controller
+                                                            .callSignatureHelp();
+                                                      });
+                                                    }
+                                                  },
+                                                  child: Row(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .center,
+                                                    children: [
+                                                      if (item
+                                                          is LspCompletion) ...[
+                                                        item.icon,
+                                                        const SizedBox(
+                                                          width: 8,
+                                                        ),
+                                                        Expanded(
+                                                          flex: 3,
+                                                          child: Text(
+                                                            item.label,
+                                                            style:
+                                                                _suggestionStyle.labelTextStyle?.copyWith(
                                                                   color:
-                                                                      _sugSelIndex ==
-                                                                          indx
+                                                                      ((!_isMobile &&
+                                                                              (indx ==
+                                                                                  _sugSelIndex)) ||
+                                                                          _controller.currentlySelectedSuggestion ==
+                                                                              indx)
                                                                       ? Colors
                                                                             .white
                                                                       : _suggestionStyle
                                                                             .labelTextStyle
                                                                             ?.color,
                                                                 ) ??
-                                                            _suggestionStyle.textStyle.copyWith(
-                                                              color:
-                                                                  _sugSelIndex ==
-                                                                      indx
-                                                                  ? Colors.white
-                                                                  : _suggestionStyle
-                                                                        .textStyle
-                                                                        .color,
-                                                            ),
-                                                        overflow: TextOverflow
-                                                            .ellipsis,
-                                                      ),
-                                                    ),
-                                                    if (item.importUri?[0] !=
-                                                        null) ...[
-                                                      const SizedBox(width: 8),
-                                                      Expanded(
-                                                        flex: 2,
-                                                        child: Text(
-                                                          item.importUri![0],
-                                                          style:
-                                                              _suggestionStyle
-                                                                  .detailTextStyle ??
-                                                              _suggestionStyle
-                                                                  .textStyle
-                                                                  .copyWith(
-                                                                    color: _suggestionStyle
-                                                                        .textStyle
-                                                                        .color
-                                                                        ?.withAlpha(
-                                                                          150,
-                                                                        ),
-                                                                  ),
-                                                          overflow: TextOverflow
-                                                              .ellipsis,
-                                                          textAlign:
-                                                              TextAlign.right,
+                                                                _suggestionStyle.textStyle.copyWith(
+                                                                  color:
+                                                                      ((!_isMobile &&
+                                                                              (indx ==
+                                                                                  _sugSelIndex)) ||
+                                                                          _controller.currentlySelectedSuggestion ==
+                                                                              indx)
+                                                                      ? Colors
+                                                                            .white
+                                                                      : _suggestionStyle
+                                                                            .textStyle
+                                                                            .color,
+                                                                ),
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                          ),
                                                         ),
-                                                      ),
+                                                        if (item.importUri?[0] !=
+                                                            null) ...[
+                                                          const SizedBox(
+                                                            width: 8,
+                                                          ),
+                                                          Expanded(
+                                                            flex: 2,
+                                                            child: Text(
+                                                              item.importUri![0],
+                                                              style:
+                                                                  _suggestionStyle
+                                                                      .detailTextStyle ??
+                                                                  _suggestionStyle
+                                                                      .textStyle
+                                                                      .copyWith(
+                                                                        color: _suggestionStyle
+                                                                            .textStyle
+                                                                            .color
+                                                                            ?.withAlpha(
+                                                                              150,
+                                                                            ),
+                                                                      ),
+                                                              overflow:
+                                                                  TextOverflow
+                                                                      .ellipsis,
+                                                              textAlign:
+                                                                  TextAlign
+                                                                      .right,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ],
+                                                      if (item is String)
+                                                        Expanded(
+                                                          child: Text(
+                                                            item,
+                                                            style:
+                                                                _suggestionStyle
+                                                                    .labelTextStyle ??
+                                                                _suggestionStyle
+                                                                    .textStyle,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                          ),
+                                                        ),
                                                     ],
-                                                  ],
-                                                  if (item is String)
-                                                    Expanded(
-                                                      child: Text(
-                                                        item,
-                                                        style:
-                                                            _suggestionStyle
-                                                                .labelTextStyle ??
-                                                            _suggestionStyle
-                                                                .textStyle,
-                                                        overflow: TextOverflow
-                                                            .ellipsis,
-                                                      ),
-                                                    ),
-                                                ],
-                                              ),
-                                            ),
-                                          );
-                                        },
+                                                  ),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ),
-                                ),
-                              ),
-                              if (_selectedSuggestionMd != null &&
-                                  _lspSignatureNotifier.value == null)
-                                Positioned(
-                                  width: screenWidth < 700
-                                      ? screenWidth * 0.63
-                                      : null,
-                                  top:
-                                      offset.dy +
-                                      (widget.textStyle?.fontSize ?? 14) +
-                                      10 +
-                                      (screenWidth < 700
-                                          ? (offset.dy < (screenWidth / 2) &&
-                                                    400 < screenHeight)
-                                                ? (((widget.textStyle?.fontSize ??
-                                                                  14) +
-                                                              6.5) *
-                                                          (_suggestionNotifier
-                                                                  .value
-                                                                  ?.length ??
-                                                              0))
-                                                      .clamp(0, 400)
-                                                : -100
-                                          : 0),
-                                  left: screenWidth < 700
-                                      ? offset.dx
-                                      : ((adjustedLeft +
-                                                    suggestionWidth +
-                                                    420) >
-                                                screenWidth
-                                            ? adjustedLeft - 420 - 10
-                                            : adjustedLeft + suggestionWidth),
-                                  child: ConstrainedBox(
-                                    constraints: BoxConstraints(
-                                      maxWidth: 420,
-                                      maxHeight: 400,
-                                      minWidth: 70,
-                                    ),
-                                    child: Card(
-                                      color: _hoverDetailsStyle.backgroundColor,
-                                      shape: _hoverDetailsStyle.shape,
-                                      child: Padding(
-                                        padding: EdgeInsets.all(
-                                          _selectedSuggestionMd!.trim().isEmpty
-                                              ? 0
-                                              : 8.0,
+                                  if (_selectedSuggestionMd != null &&
+                                      _lspSignatureNotifier.value == null)
+                                    Positioned(
+                                      width: screenWidth < 700
+                                          ? screenWidth * 0.63
+                                          : null,
+                                      top:
+                                          offset.dy +
+                                          (widget.textStyle?.fontSize ?? 14) +
+                                          10 +
+                                          (screenWidth < 700
+                                              ? (offset.dy <
+                                                            (screenWidth / 2) &&
+                                                        400 < screenHeight)
+                                                    ? (((widget.textStyle?.fontSize ??
+                                                                      14) +
+                                                                  6.5) *
+                                                              (_suggestionNotifier
+                                                                      .value
+                                                                      ?.length ??
+                                                                  0))
+                                                          .clamp(0, 400)
+                                                    : -100
+                                              : 0),
+                                      left: screenWidth < 700
+                                          ? offset.dx
+                                          : ((adjustedLeft +
+                                                        suggestionWidth +
+                                                        420) >
+                                                    screenWidth
+                                                ? adjustedLeft - 420 - 10
+                                                : adjustedLeft +
+                                                      suggestionWidth),
+                                      child: ConstrainedBox(
+                                        constraints: BoxConstraints(
+                                          maxWidth: 420,
+                                          maxHeight: 400,
+                                          minWidth: 70,
                                         ),
-                                        child: RawScrollbar(
-                                          interactive: true,
-                                          controller: completionScrlCtrl,
-                                          thumbVisibility: true,
-                                          thumbColor: _editorTheme['root']!
-                                              .color!
-                                              .withAlpha(100),
-                                          child: SingleChildScrollView(
-                                            controller: completionScrlCtrl,
-                                            child: MarkdownBlock(
-                                              data: _selectedSuggestionMd!,
-                                              config: MarkdownConfig.darkConfig.copy(
-                                                configs: [
-                                                  PConfig(
-                                                    textStyle:
-                                                        _hoverDetailsStyle
-                                                            .textStyle,
-                                                  ),
-                                                  PreConfig(
-                                                    language:
-                                                        _controller
-                                                            .lspConfig
-                                                            ?.languageId
-                                                            .toLowerCase() ??
-                                                        'dart',
-                                                    theme: _editorTheme,
-                                                    textStyle: TextStyle(
-                                                      fontSize:
-                                                          _hoverDetailsStyle
-                                                              .textStyle
-                                                              .fontSize,
-                                                    ),
-                                                    styleNotMatched: TextStyle(
-                                                      color:
-                                                          _editorTheme['root']!
-                                                              .color,
-                                                    ),
-                                                    decoration: BoxDecoration(
-                                                      color:
-                                                          _editorTheme['root']!
-                                                              .backgroundColor!,
-                                                      borderRadius:
-                                                          BorderRadius.zero,
-                                                      border: Border.all(
-                                                        width: 0.2,
-                                                        color:
-                                                            _editorTheme['root']!
-                                                                .color ??
-                                                            Colors.grey,
+                                        child: Card(
+                                          color: _hoverDetailsStyle
+                                              .backgroundColor,
+                                          shape: _hoverDetailsStyle.shape,
+                                          child: Padding(
+                                            padding: EdgeInsets.all(
+                                              _selectedSuggestionMd!
+                                                      .trim()
+                                                      .isEmpty
+                                                  ? 0
+                                                  : 8.0,
+                                            ),
+                                            child: RawScrollbar(
+                                              interactive: true,
+                                              controller: completionScrlCtrl,
+                                              thumbVisibility: true,
+                                              thumbColor: _editorTheme['root']!
+                                                  .color!
+                                                  .withAlpha(100),
+                                              child: SingleChildScrollView(
+                                                controller: completionScrlCtrl,
+                                                child: MarkdownBlock(
+                                                  data: _selectedSuggestionMd!,
+                                                  config: MarkdownConfig.darkConfig.copy(
+                                                    configs: [
+                                                      PConfig(
+                                                        textStyle:
+                                                            _hoverDetailsStyle
+                                                                .textStyle,
                                                       ),
-                                                    ),
+                                                      PreConfig(
+                                                        language:
+                                                            _controller
+                                                                .lspConfig
+                                                                ?.languageId
+                                                                .toLowerCase() ??
+                                                            'dart',
+                                                        theme: _editorTheme,
+                                                        textStyle: TextStyle(
+                                                          fontSize:
+                                                              _hoverDetailsStyle
+                                                                  .textStyle
+                                                                  .fontSize,
+                                                        ),
+                                                        styleNotMatched: TextStyle(
+                                                          color:
+                                                              _editorTheme['root']!
+                                                                  .color,
+                                                        ),
+                                                        decoration: BoxDecoration(
+                                                          color: _editorTheme['root']!
+                                                              .backgroundColor!,
+                                                          borderRadius:
+                                                              BorderRadius.zero,
+                                                          border: Border.all(
+                                                            width: 0.2,
+                                                            color:
+                                                                _editorTheme['root']!
+                                                                    .color ??
+                                                                Colors.grey,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ],
                                                   ),
-                                                ],
+                                                ),
                                               ),
                                             ),
                                           ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                                ),
-                            ],
+                                ],
+                              );
+                            },
                           );
                         },
                       );
@@ -2890,7 +3002,9 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
     final suggestions = _suggestionNotifier.value;
     if (suggestions == null || suggestions.isEmpty) return;
 
-    final selected = suggestions[_sugSelIndex];
+    final selected = _isMobileSuggActive
+        ? suggestions[_controller.currentlySelectedSuggestion!]
+        : suggestions[_sugSelIndex];
     String insertText = '';
 
     if (selected is LspCompletion) {
@@ -2906,7 +3020,9 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
     }
 
     _suggestionNotifier.value = null;
-    _sugSelIndex = 0;
+    _isMobileSuggActive
+        ? _controller.currentlySelectedSuggestion = 0
+        : _sugSelIndex = 0;
   }
 
   void _acceptGhostText() {
@@ -3092,6 +3208,7 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
   final Map<int, double> _lineWidthCache = {};
   final Map<int, String> _lineTextCache = {};
   final Map<int, Rect> _actionBulbRects = {};
+  final Map<Rect, DocumentColor> _colorBoxHitAreas = {};
   final Map<int, ui.Paragraph> _paragraphCache = {};
   final Map<int, double> _lineHeightCache = {};
   final Map<int, FoldRange?> _foldRanges = {};
@@ -3144,6 +3261,7 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
   bool _draggingStartHandle = false, _draggingEndHandle = false;
   bool _showBubble = false, _draggingCHandle = false, _readOnly;
   bool _isDeferringLayout = false, _hasCachedHeight = false;
+  Map<int, FoldRange>? _lastLspFoldRanges;
   Rect? _startHandleRect, _endHandleRect, _normalHandle;
   double _longLineWidth = 0.0, _wrapWidth = double.infinity;
   Timer? _resizeTimer, _layoutDebounceTimer;
@@ -3656,8 +3774,32 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
   }
 
   void _onControllerChange() {
+    if (controller.lspFoldRanges != _lastLspFoldRanges) {
+      _lastLspFoldRanges = controller.lspFoldRanges;
+      _foldRangesNeedsClear = true;
+    }
+
     if (controller.searchHighlightsChanged) {
       controller.searchHighlightsChanged = false;
+      markNeedsPaint();
+      return;
+    }
+
+    if (controller.inlayHintsChanged) {
+      controller.inlayHintsChanged = false;
+      markNeedsPaint();
+      return;
+    }
+
+    if (controller.documentColorsChanged) {
+      controller.documentColorsChanged = false;
+      _caretInfoCache.clear();
+      markNeedsPaint();
+      return;
+    }
+
+    if (controller.documentHighlightsChanged) {
+      controller.documentHighlightsChanged = false;
       markNeedsPaint();
       return;
     }
@@ -3687,6 +3829,20 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       if (isMobile && controller.selection.isCollapsed) {
         _showBubble = true;
       }
+
+      if (controller.selection.isCollapsed && controller.lspConfig != null) {
+        final offset = controller.selection.baseOffset;
+        if (_isOffsetOverWord(offset)) {
+          final lineChar = _offsetToLineChar(offset);
+          controller.scheduleDocumentHighlightsRefresh(
+            lineChar['line']!,
+            lineChar['character']!,
+          );
+        } else {
+          controller.clearDocumentHighlights();
+        }
+      }
+
       markNeedsPaint();
       return;
     }
@@ -3779,7 +3935,8 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       }
 
       if (enableFolding) {
-        _foldRangesNeedsClear = true;
+        _foldRanges.clear();
+        _foldRangesNeedsClear = false;
         controller.foldings = {};
       }
 
@@ -3972,10 +4129,16 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     }
 
     if (_foldRanges.containsKey(lineIndex)) {
-      return _foldRanges[lineIndex];
+      final cached = _foldRanges[lineIndex];
+      return cached;
     }
 
-    final fold = _computeFoldRangeForLine(lineIndex);
+    // Use LSP fold ranges if available, otherwise fallback to built-in algorithm
+    final lspFoldRanges = controller.lspFoldRanges;
+    final fold = (lspFoldRanges != null && lspFoldRanges.containsKey(lineIndex))
+        ? lspFoldRanges[lineIndex]
+        : _computeFoldRangeForLine(lineIndex);
+
     _foldRanges[lineIndex] = fold;
     return fold;
   }
@@ -4356,6 +4519,9 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       }
     }
 
+    final colorBoxOffset = _getColorBoxOffsetForLine(lineIndex, clampedCol);
+    caretX += colorBoxOffset;
+
     final ghostOffset = _getGhostTextVisualOffset(lineIndex);
 
     final result = (
@@ -4366,6 +4532,24 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     );
     _caretInfoCache[cursorOffset] = result;
     return result;
+  }
+
+  double _getColorBoxOffsetForLine(int line, int column) {
+    final colors = controller.documentColors;
+    if (colors.isEmpty) return 0;
+
+    final fontSize = textStyle?.fontSize ?? 14.0;
+    final colorBoxSize = fontSize * 0.85;
+    final colorBoxSpacing = 4.0;
+    final totalColorWidth = colorBoxSize + colorBoxSpacing;
+
+    double offset = 0;
+    for (final docColor in colors) {
+      if (docColor.line == line && docColor.startColumn < column) {
+        offset += totalColorWidth;
+      }
+    }
+    return offset;
   }
 
   int _getTextOffsetFromPosition(Offset position) {
@@ -4395,7 +4579,46 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       _paragraphCache[tappedLineIndex] = para;
     }
 
-    final localX = position.dx;
+    double localX = position.dx;
+
+    final colors =
+        controller.documentColors
+            .where((c) => c.line == tappedLineIndex)
+            .toList()
+          ..sort((a, b) => a.startColumn.compareTo(b.startColumn));
+
+    if (colors.isNotEmpty) {
+      final fontSize = textStyle?.fontSize ?? 14.0;
+      final colorBoxSize = fontSize * 0.85;
+      final colorBoxSpacing = 4.0;
+      final totalColorWidth = colorBoxSize + colorBoxSpacing;
+
+      double totalAdjustment = 0;
+      for (final docColor in colors) {
+        final textX =
+            para
+                .getBoxesForRange(
+                  0,
+                  docColor.startColumn.clamp(0, lineText.length),
+                )
+                .lastOrNull
+                ?.right ??
+            0;
+
+        final colorBoxStartX = textX + totalAdjustment;
+        final colorBoxEndX = colorBoxStartX + totalColorWidth;
+
+        if (localX > colorBoxEndX) {
+          totalAdjustment += totalColorWidth;
+        } else if (localX > colorBoxStartX && localX <= colorBoxEndX) {
+          localX = textX + totalAdjustment;
+          break;
+        } else {
+          break;
+        }
+      }
+      localX -= totalAdjustment;
+    }
 
     final hasActiveFolds = _foldRanges.values.any(
       (f) => f != null && f.isFolded,
@@ -4740,6 +4963,17 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       hasActiveFolds,
     );
 
+    if (controller.documentHighlights.isNotEmpty) {
+      _drawDocumentHighlights(
+        canvas,
+        offset,
+        firstVisibleLine,
+        lastVisibleLine,
+        firstVisibleLineY,
+        hasActiveFolds,
+      );
+    }
+
     _drawSelection(
       canvas,
       offset,
@@ -4850,6 +5084,29 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       firstVisibleLineY,
       hasActiveFolds,
     );
+
+    _colorBoxHitAreas.clear();
+    if (controller.documentColors.isNotEmpty) {
+      _drawDocumentColors(
+        canvas,
+        offset,
+        firstVisibleLine,
+        lastVisibleLine,
+        firstVisibleLineY,
+        hasActiveFolds,
+      );
+    }
+
+    if (controller.inlayHintsVisible && controller.inlayHints.isNotEmpty) {
+      _drawInlayHints(
+        canvas,
+        offset,
+        firstVisibleLine,
+        lastVisibleLine,
+        firstVisibleLineY,
+        hasActiveFolds,
+      );
+    }
 
     if (controller.ghostText != null) {
       _drawGhostText(
@@ -5317,7 +5574,13 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
             );
             actionBulbPainter.layout();
 
-            final bulbX = offset.dx + 4;
+            final bulbX = isMobile
+                ? offset.dx +
+                      _gutterWidth -
+                      actionBulbPainter.width -
+                      (baseLineNumberStyle.fontSize ?? 14) +
+                      4
+                : offset.dx + 4;
             final bulbY =
                 offset.dy +
                 (innerPadding?.top ?? 0) +
@@ -5755,11 +6018,15 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     final lineY = _getLineYOffset(lineIndex, hasActiveFolds);
     final boxY = lineY + box.top;
 
+    // Add color box offset for correct bracket highlight position
+    final colorBoxOffset = _getColorBoxOffsetForLine(lineIndex, columnIndex);
+
     final screenX =
         offset.dx +
         _gutterWidth +
         (innerPadding?.left ?? 0) +
-        box.left -
+        box.left +
+        colorBoxOffset -
         (lineWrap ? 0 : hscrollController.offset);
     final screenY =
         offset.dy + (innerPadding?.top ?? 0) + boxY - vscrollController.offset;
@@ -6153,18 +6420,31 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
 
       final lineY = _getLineYOffset(lineIndex, hasActiveFolds);
 
+      final colorBoxOffsetStart = _getColorBoxOffsetForLine(
+        lineIndex,
+        lineSelStart,
+      );
+      final colorBoxOffsetEnd = _getColorBoxOffsetForLine(
+        lineIndex,
+        lineSelEnd,
+      );
+
       if (lineSelStart < lineSelEnd && lineText.isNotEmpty) {
         final boxes = para.getBoxesForRange(
           lineSelStart.clamp(0, lineText.length),
           lineSelEnd.clamp(0, lineText.length),
         );
 
-        for (final box in boxes) {
+        for (int i = 0; i < boxes.length; i++) {
+          final box = boxes[i];
+          final adjustedLeft = box.left + colorBoxOffsetStart;
+          final adjustedRight = box.right + colorBoxOffsetEnd;
+
           final screenX =
               offset.dx +
               _gutterWidth +
               (innerPadding?.left ?? 0) +
-              box.left -
+              adjustedLeft -
               (lineWrap ? 0 : hscrollController.offset);
           final screenY =
               offset.dy +
@@ -6174,7 +6454,12 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
               vscrollController.offset;
 
           canvas.drawRect(
-            Rect.fromLTWH(screenX, screenY, box.right - box.left, _lineHeight),
+            Rect.fromLTWH(
+              screenX,
+              screenY,
+              adjustedRight - adjustedLeft,
+              _lineHeight,
+            ),
             selectionPaint,
           );
         }
@@ -6205,6 +6490,103 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
       endLine,
       hasActiveFolds,
     );
+  }
+
+  void _drawDocumentHighlights(
+    Canvas canvas,
+    Offset offset,
+    int firstVisibleLine,
+    int lastVisibleLine,
+    double firstVisibleLineY,
+    bool hasActiveFolds,
+  ) {
+    final highlights = controller.documentHighlights;
+    if (highlights.isEmpty) return;
+
+    final highlightPaint = Paint()
+      ..color = (editorTheme['root']?.color ?? Colors.white).withValues(
+        alpha: 0.2,
+      )
+      ..style = PaintingStyle.fill;
+
+    for (final highlight in highlights) {
+      final startLine = highlight.startLine;
+      final endLine = highlight.endLine;
+
+      if (endLine < firstVisibleLine || startLine > lastVisibleLine) continue;
+
+      for (int lineIndex = startLine; lineIndex <= endLine; lineIndex++) {
+        if (lineIndex < firstVisibleLine || lineIndex > lastVisibleLine) {
+          continue;
+        }
+        if (hasActiveFolds && _isLineFolded(lineIndex)) continue;
+
+        final lineText =
+            _lineTextCache[lineIndex] ?? controller.getLineText(lineIndex);
+        final lineLength = lineText.length;
+
+        int lineHighStart = 0;
+        int lineHighEnd = lineLength;
+
+        if (lineIndex == startLine) {
+          lineHighStart = highlight.startColumn;
+        }
+        if (lineIndex == endLine) {
+          lineHighEnd = highlight.endColumn;
+        }
+
+        lineHighStart = lineHighStart.clamp(0, lineLength);
+        lineHighEnd = lineHighEnd.clamp(0, lineLength);
+
+        if (lineHighStart >= lineHighEnd) continue;
+
+        ui.Paragraph para;
+        if (_paragraphCache.containsKey(lineIndex)) {
+          para = _paragraphCache[lineIndex]!;
+        } else {
+          para = _buildHighlightedParagraph(
+            lineIndex,
+            lineText,
+            width: lineWrap ? _wrapWidth : null,
+          );
+        }
+
+        final lineY = _getLineYOffset(lineIndex, hasActiveFolds);
+        final colorBoxOffset = _getColorBoxOffsetForLine(
+          lineIndex,
+          lineHighStart,
+        );
+        final boxes = para.getBoxesForRange(lineHighStart, lineHighEnd);
+
+        for (final box in boxes) {
+          final adjustedLeft = box.left + colorBoxOffset;
+          final adjustedRight = box.right + colorBoxOffset;
+
+          final screenX =
+              offset.dx +
+              _gutterWidth +
+              (innerPadding?.left ?? 0) +
+              adjustedLeft -
+              (lineWrap ? 0 : hscrollController.offset);
+          final screenY =
+              offset.dy +
+              (innerPadding?.top ?? 0) +
+              lineY +
+              box.top -
+              vscrollController.offset;
+
+          canvas.drawRect(
+            Rect.fromLTWH(
+              screenX,
+              screenY,
+              adjustedRight - adjustedLeft,
+              box.bottom - box.top,
+            ),
+            highlightPaint,
+          );
+        }
+      }
+    }
   }
 
   void _updateSelectionHandleRects(
@@ -6247,6 +6629,8 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     } else {
       startX = 0;
     }
+
+    startX += _getColorBoxOffsetForLine(startLine, startCol);
 
     final startScreenX =
         offset.dx +
@@ -6300,6 +6684,8 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     } else {
       endX = 0;
     }
+
+    endX += _getColorBoxOffsetForLine(endLine, endCol);
 
     final endScreenX =
         offset.dx +
@@ -7117,6 +7503,529 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     }
   }
 
+  /// Draws inlay hints inline with the code, pushing text to the right
+  void _drawInlayHints(
+    Canvas canvas,
+    Offset offset,
+    int firstVisibleLine,
+    int lastVisibleLine,
+    double firstVisibleLineY,
+    bool hasActiveFolds,
+  ) {
+    final hints = controller.inlayHints;
+    if (hints.isEmpty) return;
+
+    final fontSize = textStyle?.fontSize ?? 14.0;
+    final fontFamily = textStyle?.fontFamily;
+    final baseColor =
+        textStyle?.color ?? editorTheme['root']?.color ?? Colors.white;
+    final bgColor = editorTheme['root']?.backgroundColor ?? Colors.black;
+
+    final typeHintStyle = ui.TextStyle(
+      color: baseColor.withAlpha(150),
+      fontSize: fontSize * 0.9,
+      fontFamily: fontFamily,
+      fontStyle: FontStyle.italic,
+    );
+
+    final paramHintStyle = ui.TextStyle(
+      color: baseColor.withAlpha(180),
+      fontSize: fontSize * 0.9,
+      fontFamily: fontFamily,
+    );
+
+    final hintBgColor = bgColor.withAlpha(200);
+    final hintBorderColor = baseColor.withAlpha(50);
+
+    final hintsByLine = <int, List<InlayHint>>{};
+    for (final hint in hints) {
+      if (hint.line >= firstVisibleLine && hint.line <= lastVisibleLine) {
+        if (!hasActiveFolds || !_isLineFolded(hint.line)) {
+          hintsByLine.putIfAbsent(hint.line, () => []).add(hint);
+        }
+      }
+    }
+
+    hintsByLine.forEach((line, lineHints) {
+      lineHints.sort((a, b) => a.column.compareTo(b.column));
+    });
+
+    for (final entry in hintsByLine.entries) {
+      final line = entry.key;
+      final lineHints = entry.value;
+      final lineText = _lineTextCache[line] ?? controller.getLineText(line);
+      final lineY = _getLineYOffset(line, hasActiveFolds);
+      final para =
+          _paragraphCache[line] ??
+          _buildHighlightedParagraph(
+            line,
+            lineText,
+            width: lineWrap ? _wrapWidth : null,
+          );
+
+      final baseScreenY =
+          offset.dy +
+          (innerPadding?.top ?? 0) +
+          lineY -
+          vscrollController.offset;
+
+      final baseScreenX =
+          offset.dx +
+          _gutterWidth +
+          (innerPadding?.left ?? 0) -
+          (lineWrap ? 0 : hscrollController.offset);
+
+      final firstHint = lineHints.first;
+      double firstHintX = 0;
+      if (firstHint.column > 0 && lineText.isNotEmpty) {
+        final boxes = para.getBoxesForRange(
+          0,
+          firstHint.column.clamp(0, lineText.length),
+        );
+        if (boxes.isNotEmpty) {
+          firstHintX = boxes.last.right;
+        }
+      }
+
+      double totalHintWidth = 0;
+      for (final hint in lineHints) {
+        final hintText = hint.paddingLeft ? ' ${hint.text}' : hint.text;
+        final displayText = hint.paddingRight ? '$hintText ' : hintText;
+        final builder =
+            ui.ParagraphBuilder(
+                ui.ParagraphStyle(
+                  fontFamily: fontFamily,
+                  fontSize: fontSize * 0.9,
+                  height: textStyle?.height ?? 1.2,
+                ),
+              )
+              ..pushStyle(
+                hint.kind == InlayHintKind.type
+                    ? typeHintStyle
+                    : paramHintStyle,
+              )
+              ..addText(displayText);
+        final tempPara = builder.build();
+        tempPara.layout(const ui.ParagraphConstraints(width: double.infinity));
+        totalHintWidth += tempPara.longestLine + 4;
+      }
+
+      final remainingWidth = para.longestLine - firstHintX + totalHintWidth;
+      canvas.drawRect(
+        Rect.fromLTWH(
+          baseScreenX + firstHintX,
+          baseScreenY,
+          remainingWidth + 20,
+          _lineHeight,
+        ),
+        Paint()..color = bgColor,
+      );
+
+      double currentX = firstHintX;
+      int lastColumn = firstHint.column;
+
+      for (int i = 0; i < lineHints.length; i++) {
+        final hint = lineHints[i];
+        final column = hint.column;
+
+        if (i > 0 && column > lastColumn && lastColumn < lineText.length) {
+          final endCol = column.clamp(lastColumn, lineText.length);
+          final segmentStartX =
+              para.getBoxesForRange(0, lastColumn).lastOrNull?.right ?? 0;
+          final segmentEndX =
+              para.getBoxesForRange(0, endCol).lastOrNull?.right ??
+              segmentStartX;
+          final segmentWidth = segmentEndX - segmentStartX;
+
+          canvas.save();
+          canvas.clipRect(
+            Rect.fromLTWH(
+              baseScreenX + currentX,
+              baseScreenY,
+              segmentWidth,
+              _lineHeight,
+            ),
+          );
+
+          canvas.drawParagraph(
+            para,
+            Offset(baseScreenX + currentX - segmentStartX, baseScreenY),
+          );
+          canvas.restore();
+
+          currentX += segmentWidth;
+        }
+
+        final style = hint.kind == InlayHintKind.type
+            ? typeHintStyle
+            : paramHintStyle;
+        final hintText = hint.paddingLeft ? ' ${hint.text}' : hint.text;
+        final displayText = hint.paddingRight ? '$hintText ' : hintText;
+
+        final builder =
+            ui.ParagraphBuilder(
+                ui.ParagraphStyle(
+                  fontFamily: fontFamily,
+                  fontSize: fontSize * 0.9,
+                  height: textStyle?.height ?? 1.2,
+                ),
+              )
+              ..pushStyle(style)
+              ..addText(displayText);
+
+        final hintPara = builder.build();
+        hintPara.layout(const ui.ParagraphConstraints(width: double.infinity));
+        final hintWidth = hintPara.longestLine;
+
+        // Draw background with rounded corners
+        final hintHeight = hintPara.height;
+        final bgRect = RRect.fromRectAndRadius(
+          Rect.fromLTWH(
+            baseScreenX + currentX - 2,
+            baseScreenY + 1,
+            hintWidth + 4,
+            hintHeight - 2,
+          ),
+          const Radius.circular(3),
+        );
+
+        canvas.drawRRect(bgRect, Paint()..color = hintBgColor);
+        canvas.drawRRect(
+          bgRect,
+          Paint()
+            ..color = hintBorderColor
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 0.5,
+        );
+
+        canvas.drawParagraph(
+          hintPara,
+          Offset(baseScreenX + currentX, baseScreenY),
+        );
+        currentX += hintWidth + 4;
+        lastColumn = column;
+      }
+
+      if (lastColumn < lineText.length) {
+        final remainingStartX =
+            para.getBoxesForRange(0, lastColumn).lastOrNull?.right ?? 0;
+        final remainingWidth = para.longestLine - remainingStartX;
+
+        canvas.save();
+        canvas.clipRect(
+          Rect.fromLTWH(
+            baseScreenX + currentX,
+            baseScreenY,
+            remainingWidth + 10,
+            _lineHeight,
+          ),
+        );
+
+        canvas.drawParagraph(
+          para,
+          Offset(baseScreenX + currentX - remainingStartX, baseScreenY),
+        );
+        canvas.restore();
+      }
+    }
+  }
+
+  /// Draws document color boxes inline before color literals, pushing text to the right
+  void _drawDocumentColors(
+    Canvas canvas,
+    Offset offset,
+    int firstVisibleLine,
+    int lastVisibleLine,
+    double firstVisibleLineY,
+    bool hasActiveFolds,
+  ) {
+    final colors = controller.documentColors;
+    if (colors.isEmpty) return;
+
+    final fontSize = textStyle?.fontSize ?? 14.0;
+    final colorBoxSize = fontSize * 0.85;
+    final colorBoxSpacing = 4.0;
+    final totalColorWidth = colorBoxSize + colorBoxSpacing;
+    final bgColor = editorTheme['root']?.backgroundColor ?? Colors.black;
+    final colorsByLine = <int, List<DocumentColor>>{};
+
+    for (final docColor in colors) {
+      if (docColor.line >= firstVisibleLine &&
+          docColor.line <= lastVisibleLine) {
+        if (!hasActiveFolds || !_isLineFolded(docColor.line)) {
+          colorsByLine.putIfAbsent(docColor.line, () => []).add(docColor);
+        }
+      }
+    }
+
+    colorsByLine.forEach((line, lineColors) {
+      lineColors.sort((a, b) => a.startColumn.compareTo(b.startColumn));
+    });
+
+    for (final entry in colorsByLine.entries) {
+      final line = entry.key;
+      final lineColors = entry.value;
+      final lineText = _lineTextCache[line] ?? controller.getLineText(line);
+      final lineY = _getLineYOffset(line, hasActiveFolds);
+      final para =
+          _paragraphCache[line] ??
+          _buildHighlightedParagraph(
+            line,
+            lineText,
+            width: lineWrap ? _wrapWidth : null,
+          );
+
+      final baseScreenY =
+          offset.dy +
+          (innerPadding?.top ?? 0) +
+          lineY -
+          vscrollController.offset;
+
+      final baseScreenX =
+          offset.dx +
+          _gutterWidth +
+          (innerPadding?.left ?? 0) -
+          (lineWrap ? 0 : hscrollController.offset);
+
+      final firstColor = lineColors.first;
+      double firstColorX = 0;
+      if (firstColor.startColumn > 0 && lineText.isNotEmpty) {
+        final boxes = para.getBoxesForRange(
+          0,
+          firstColor.startColumn.clamp(0, lineText.length),
+        );
+        if (boxes.isNotEmpty) {
+          firstColorX = boxes.last.right;
+        }
+      }
+
+      final totalColorBoxWidth = lineColors.length * totalColorWidth;
+      final remainingWidth =
+          para.longestLine - firstColorX + totalColorBoxWidth;
+
+      canvas.drawRect(
+        Rect.fromLTWH(
+          baseScreenX + firstColorX,
+          baseScreenY,
+          remainingWidth + 20,
+          _lineHeight,
+        ),
+        Paint()..color = bgColor,
+      );
+
+      double currentX = firstColorX;
+      int lastColumn = firstColor.startColumn;
+
+      for (int i = 0; i < lineColors.length; i++) {
+        final docColor = lineColors[i];
+        final startColumn = docColor.startColumn;
+
+        if (i > 0 && startColumn > lastColumn && lastColumn < lineText.length) {
+          final endCol = startColumn.clamp(lastColumn, lineText.length);
+          final segmentStartX =
+              para.getBoxesForRange(0, lastColumn).lastOrNull?.right ?? 0;
+          final segmentEndX =
+              para.getBoxesForRange(0, endCol).lastOrNull?.right ??
+              segmentStartX;
+          final segmentWidth = segmentEndX - segmentStartX;
+
+          canvas.save();
+          canvas.clipRect(
+            Rect.fromLTWH(
+              baseScreenX + currentX,
+              baseScreenY,
+              segmentWidth,
+              _lineHeight,
+            ),
+          );
+
+          canvas.drawParagraph(
+            para,
+            Offset(baseScreenX + currentX - segmentStartX, baseScreenY),
+          );
+          canvas.restore();
+
+          currentX += segmentWidth;
+        }
+
+        final colorBoxY = baseScreenY + (_lineHeight - colorBoxSize) / 2;
+        final colorRect = RRect.fromRectAndRadius(
+          Rect.fromLTWH(
+            baseScreenX + currentX,
+            colorBoxY,
+            colorBoxSize,
+            colorBoxSize,
+          ),
+          const Radius.circular(2),
+        );
+
+        if ((docColor.color.a * 255).round() < 255) {
+          canvas.save();
+          canvas.clipRRect(colorRect);
+          final checkerSize = colorBoxSize / 4;
+          final checkerPaint = Paint()..color = Colors.grey.shade300;
+          for (int row = 0; row < 4; row++) {
+            for (int col = 0; col < 4; col++) {
+              if ((row + col) % 2 == 0) {
+                canvas.drawRect(
+                  Rect.fromLTWH(
+                    baseScreenX + currentX + col * checkerSize,
+                    colorBoxY + row * checkerSize,
+                    checkerSize,
+                    checkerSize,
+                  ),
+                  checkerPaint,
+                );
+              }
+            }
+          }
+          canvas.restore();
+        }
+
+        canvas.drawRRect(colorRect, Paint()..color = docColor.color);
+
+        final borderColor = editorTheme['root']?.color ?? Colors.white;
+        canvas.drawRRect(
+          colorRect,
+          Paint()
+            ..color = borderColor
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1,
+        );
+
+        // Store hit area for click detection
+        _colorBoxHitAreas[colorRect.outerRect] = docColor;
+
+        currentX += totalColorWidth;
+        lastColumn = startColumn;
+      }
+
+      if (lastColumn < lineText.length) {
+        final remainingStartX =
+            para.getBoxesForRange(0, lastColumn).lastOrNull?.right ?? 0;
+        final remainingWidth = para.longestLine - remainingStartX;
+
+        canvas.save();
+        canvas.clipRect(
+          Rect.fromLTWH(
+            baseScreenX + currentX,
+            baseScreenY,
+            remainingWidth + 10,
+            _lineHeight,
+          ),
+        );
+
+        canvas.drawParagraph(
+          para,
+          Offset(baseScreenX + currentX - remainingStartX, baseScreenY),
+        );
+        canvas.restore();
+      }
+    }
+  }
+
+  void _showColorPicker(DocumentColor docColor) {
+    final lsp = lspConfig;
+    final file = filePath;
+    if (lsp == null || file == null) return;
+
+    Color pickerColor = docColor.color;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Pick a color'),
+          content: SingleChildScrollView(
+            child: ColorPicker(
+              pickerColor: pickerColor,
+              onColorChanged: (color) {
+                pickerColor = color;
+              },
+              enableAlpha: true,
+              displayThumbColor: true,
+              pickerAreaHeightPercent: 0.8,
+            ),
+          ),
+          actions: [
+            TextButton(
+              child: const Text('Cancel'),
+              onPressed: () => Navigator.of(dialogContext).pop(),
+            ),
+            TextButton(
+              child: const Text('Apply'),
+              onPressed: () async {
+                Navigator.of(dialogContext).pop();
+                await _applyColorChange(docColor, pickerColor);
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _applyColorChange(DocumentColor docColor, Color newColor) async {
+    final lsp = lspConfig;
+    final file = filePath;
+    if (lsp == null || file == null) return;
+
+    try {
+      final range = {
+        'start': {'line': docColor.line, 'character': docColor.startColumn},
+        'end': {'line': docColor.line, 'character': docColor.endColumn},
+      };
+
+      final response = await lsp.getColorPresentation(
+        file,
+        red: newColor.r,
+        green: newColor.g,
+        blue: newColor.b,
+        alpha: newColor.a,
+        range: range,
+      );
+
+      final result = response['result'];
+      if (result is List && result.isNotEmpty) {
+        final presentation = result[0];
+        final textEdit = presentation['textEdit'];
+
+        if (textEdit != null) {
+          final newText = textEdit['newText'] as String?;
+          final editRange = textEdit['range'];
+
+          if (newText != null && editRange != null) {
+            final startLine = editRange['start']['line'] as int;
+            final startChar = editRange['start']['character'] as int;
+            final endLine = editRange['end']['line'] as int;
+            final endChar = editRange['end']['character'] as int;
+
+            final startOffset =
+                controller.getLineStartOffset(startLine) + startChar;
+            final endOffset = controller.getLineStartOffset(endLine) + endChar;
+
+            controller.replaceRange(startOffset, endOffset, newText);
+          }
+        } else {
+          // Fallback: use the label if textEdit is not provided
+          final label = presentation['label'] as String?;
+          if (label != null) {
+            final startOffset =
+                controller.getLineStartOffset(docColor.line) +
+                docColor.startColumn;
+            final endOffset =
+                controller.getLineStartOffset(docColor.line) +
+                docColor.endColumn;
+
+            controller.replaceRange(startOffset, endOffset, label);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error applying color change: $e');
+    }
+  }
+
   @override
   void dispose() {
     controller.removeListener(_onControllerChange);
@@ -7191,6 +8100,16 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
           if (entry.value.contains(localPosition)) {
             suggestionNotifier.value = null;
             lspActionOffsetNotifier.value = event.localPosition;
+            return;
+          }
+        }
+      }
+
+      // Check if clicked on a color box
+      if (_colorBoxHitAreas.isNotEmpty) {
+        for (final entry in _colorBoxHitAreas.entries) {
+          if (entry.key.contains(localPosition)) {
+            _showColorPicker(entry.value);
             return;
           }
         }
@@ -7473,6 +8392,15 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
 
       return MouseCursor.defer;
     }
+
+    if (_colorBoxHitAreas.isNotEmpty) {
+      for (final rect in _colorBoxHitAreas.keys) {
+        if (rect.contains(_currentPosition)) {
+          return SystemMouseCursors.click;
+        }
+      }
+    }
+
     return SystemMouseCursors.text;
   }
 

@@ -37,13 +37,41 @@
 >
 > CodeForge does **not** support Flutter web, as it relies on `dart:io` for core functionality. Web support may be considered in the future if dependencies allow.
 
-## What's new in 6.1.0
-- FEATURE: Added more public API methods to the controller.<br>
-    • `duplicateLine()`<br>
-    • `moveLineDown()`<br>
-    • `moveLineUp()`<br>
-    • `callSignatureHelp()`<br>
-- ENHANCEMENT: LSP suggestions style.
+
+<details>
+  <summary><h3>What's new in 7.0.0</h3></summary>
+  
+  - FEATURE: Added `LspClientCapabilities` class to selectively enable/disable LSP features during initialization.<br>
+      • `semanticHighlighting` — Enable/disable semantic token highlighting<br>
+      • `codeCompletion` — Enable/disable code completion suggestions<br>
+      • `hoverInfo` — Enable/disable hover documentation<br>
+      • `codeAction` — Enable/disable code actions and quick fixes<br>
+      • `signatureHelp` — Enable/disable signature help<br>
+      • `documentColor` — Enable/disable document color detection<br>
+      • `documentHighlight` — Enable/disable document highlighting<br>
+      • `codeFolding` — Enable/disable code folding<br>
+      • `inlayHint` — Enable/disable inlay hints<br>
+      • `goToDefinition` — Enable/disable "go to definition"<br>
+      • `rename` — Enable/disable symbol renaming<br>
+  - FEATURE: Added `deleteFoldRangeOnDeletingFirstLine` parameter to `CodeForge` widget as requested in [#24](https://github.com/heckmon/code_forge/issues/24). When set to `true`, deleting the entire first line of a folded block will delete the whole folded region.
+  - ENHANCEMENT: Mobile context menu toolbar now persists after "Select All" action.
+  - ENHANCEMENT: Repositioned code action bulb icon on mobile to avoid overlap with fold icons and gutter.
+  - ENHANCEMENT: LSP methods now check capability flags before executing, returning early with appropriate empty values when features are disabled.
+  - ENHANCEMENT: Dynamic capability building during LSP initialization — only enabled features are advertised to the language server.
+  - FEATURE: Inlay hints and color picker:<br>
+      - Added LSP inlay hints and Colour picker as requested in [#22](https://github.com/heckmon/code_forge/issues/22).<br><br>
+      Inlay hint demo: https://github.com/user-attachments/assets/658fd76f-5650-4374-b44d-58db69813e66 <br>
+      Color pciker demo: https://github.com/user-attachments/assets/a7e1795c-83ca-411f-9c1d-81c8d4949926
+
+  - FEATURE: Added doucment highlight as requested in [#22](https://github.com/heckmon/code_forge/issues/22).<br>
+    - demo: https://github.com/user-attachments/assets/593a524f-f5d7-45af-b5a5-d67cc1ed95fa
+
+  - FEATURE: Added arrow key navigation for LSP suggestions in mobile as requested in [#21](https://github.com/heckmon/code_forge/issues/21).<br>
+    - demo: https://github.com/user-attachments/assets/8237dbdb-ba36-490d-9db2-4ffe1e24da8a
+
+  - FIX: [#25](https://github.com/heckmon/code_forge/issues/25)
+  - FIX: Fixed action icon misposition in mobile as requested in [#23](https://github.com/heckmon/code_forge/issues/23)
+</details>
 
 ## ✨ Why CodeForge?
 
@@ -128,17 +156,19 @@
 - ✂️ **Line Operations** — Move, duplicate, delete lines
 
 #### LSP Features
-- 💡 **Intelligent Completions** — Context-aware suggestions
-- 📖 **Hover Documentation** — Rich markdown tooltips
-- 🚨 **Real-time Diagnostics** — Errors and warnings
-- 🎨 **Semantic Highlighting** — Token-based coloring
+- 💡 **Intelligent Completions** — Context-aware code suggestions with auto-import
+- 📖 **Hover Documentation** — Rich markdown tooltips with type information
+- 🚨 **Real-time Diagnostics** — Errors and warnings with quick fixes
+- 🎨 **Semantic Highlighting** — Token-based coloring with modifiers
+- 💬 **Signature Help** — Function signatures and parameter hints
+- 🔧 **Code Actions** — Quick fixes and refactoring suggestions
+- ✨ **Inlay Hints** — Inline annotations for types and parameters
+- 🎯 **Document Highlight** — Highlight symbol occurrences
+- 🎨 **Document Colors** — Color value detection and picker
+- 📍 **Go to Definition** — Navigate to symbol definitions
+- ✏️ **Symbol Renaming** — Rename symbols across workspace
 - 📡 **Multiple Protocols** — Stdio and WebSocket support
-
-#### AI Features
-- 🤖 **Multi-Model Support** — Gemini and extensible
-- ⚙️ **Completion Modes** — Auto, manual, or mixed
-- 💾 **Response Caching** — Improved performance
-- 🧹 **Smart Parsing** — Clean code extraction
+- ⚙️ **Capability Control** — Selectively enable/disable LSP features
 
 #### Customization
 - 🎨 **Full Theming** — Every element customizable
@@ -156,7 +186,7 @@ Add CodeForge to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  code_forge: ^6.1.0
+  code_forge: ^7.0.0
 ```
 
 Then run:
@@ -509,6 +539,7 @@ CodeForge(
 | `enableSuggestions` | `bool` | Enable autocomplete suggestions |
 | `enableKeyboardSuggestions` | `bool` | Show auto completions in OS virtual keyboard |
 | `keyboardType` | `TextInputType` | Type of virtual keyboard |
+| `deleteFoldRangeOnDeletingFirstLine` | `bool` | When true, deleting the first line of a folded block removes the entire block |
 | `finderBuilder` | `PreferredSizeWidget Function(FindController findController)?` | Builder for custom Finder widget |
 
 ### CodeForgeController
@@ -520,62 +551,96 @@ final controller = CodeForgeController();
 controller.text = 'Hello, World!';
 String content = controller.text;
 controller.getLineText(int lineIndex);
+controller.insertText(String text, int line, int character);
+controller.insertAtCurrentCursor(String text);
 
-// Selection
+// Selection & modification
 controller.selection = TextSelection(baseOffset: 0, extentOffset: 5);
+controller.selectAll();
+controller.copy();
+controller.cut();
+controller.paste();
 
 // Line operations
 int lineCount = controller.lineCount;
 String line = controller.getLineText(0);
 int lineStart = controller.getLineStartOffset(0);
 controller.duplicateLine();
-controller.moveLineDown()
-controller.moveLineUp()
+controller.moveLineDown();
+controller.moveLineUp();
+controller.backspace();
+controller.delete();
 
 // Folding
 controller.foldAll();
 controller.unfoldAll();
 controller.toggleFold(lineNumber);
 
-// Search
+// Search & find
+controller.findWord(String word, matchCase: false, matchWholeWord: false);
+controller.findRegex(String pattern);
 controller.searchHighlights = [
   SearchHighlight(start: 0, end: 5, color: Colors.yellow),
 ];
 
-// Scoll to a line
-controller.scollToLine(int line);
+// Scroll navigation
+controller.scrollToLine(int line);
+
+// Inlay hints
+await controller.fetchInlayHints(int startLine, int startCharacter, int endLine, int endCharacter);
+controller.showInlayHints();
+controller.hideInlayHints();
+controller.setInlayHints(List<InlayHint> hints);
+controller.clearInlayHints();
+
+// Document colors
+await controller.fetchDocumentColors();
+
+// Document highlights
+await controller.fetchDocumentHighlights(int line, int character);
+controller.clearDocumentHighlights();
+
+// LSP features
+await controller.callSignatureHelp();
+controller.getCodeAction();
 
 // Editor decorations
 controller.setGitDiffDecorations(
-  addedRanges: [(int startLine, int endLine), (int startline, int endLine), ... etc],
-  removedRanges: [same pattern as above],
-  modifiedRanges: [same pattern as above],
+  addedRanges: [(int startLine, int endLine), ...],
+  removedRanges: [...],
+  modifiedRanges: [...],
   addedColor: const Color(0xFF4CAF50),
   removedColor: const Color(0xFFE53935),
   modifiedColor: const Color(0xFF2196F3),
 );
+controller.clearGitDiffDecorations();
 
 controller.addLineDecoration(LineDecoration decoration);
-controller.removeLineDecoration();
+controller.addLineDecorations(List<LineDecoration> decorations);
+controller.removeLineDecoration(String id);
 controller.addGutterDecoration(GutterDecoration decoration);
-controller.removeGutterDecoration();
-controller.clearGutterDecoration();
-controller.setGhostText(String text);
+controller.addGutterDecorations(List<GutterDecoration> decorations);
+controller.removeGutterDecoration(String id);
+controller.clearGutterDecorations();
+
+// Ghost text (inline suggestions)
+controller.setGhostText(GhostText ghostText);
 controller.clearGhostText();
 
-// LSP features
-controller.callSignatureHelp();
-controller.getCodeAction();
+// File operations
+controller.saveFile();
 
 // Navigation
-controller.pressLeftArrowKey();
-controller.pressRightArrowKey();
-controller.pressUpArrowKey();
-controller.pressDownArrowKey();
-controller.pressHomeKey();
-controller.pressEndKey();
-controller.pressDocumentHome();
-controller.pressDocumentEndKey();
+controller.pressLeftArrowKey(isShiftPressed: false);
+controller.pressRightArrowKey(isShiftPressed: false);
+controller.pressUpArrowKey(isShiftPressed: false);
+controller.pressDownArrowKey(isShiftPressed: false);
+controller.pressHomeKey(isShiftPressed: false);
+controller.pressEndKey(isShiftPressed: false);
+controller.pressDocumentHomeKey(isShiftPressed: false);
+controller.pressDocumentEndKey(isShiftPressed: false);
+controller.pressWordLeftArrowKey(isShiftPressed: false);
+controller.pressWordRightArrowKey(isShiftPressed: false);
 
 ```
 There are more methods available in the CodeForgeController API. You can see the complete list [here](https://pub.dev/documentation/code_forge/latest/code_forge_controller/CodeForgeController-class.html#instance-methods)
@@ -646,6 +711,32 @@ matchHighlightStyle: const MatchHighlightStyle(
 ),
 ```
 
+### LspClientCapabilities
+
+Controls which LSP features are enabled during language server initialization.
+
+```dart
+// Pass to LspSocketConfig or LspStdioConfig
+final lspConfig = LspSocketConfig(
+  workspacePath: "/path/to/workspace",
+  languageId: "dart",
+  serverUrl: "ws://localhost:5656",
+  capabilities: LspClientCapabilities(
+    semanticHighlighting: true,  // Semantic token highlighting
+    codeCompletion: true,        // Code completion suggestions
+    hoverInfo: true,             // Hover documentation
+    codeAction: true,            // Code actions and quick fixes
+    signatureHelp: true,         // Signature help
+    documentColor: true,         // Document color detection
+    documentHighlight: true,     // Symbol occurrence highlighting
+    codeFolding: true,           // Code folding ranges
+    inlayHint: true,             // Inlay hints
+    goToDefinition: true,        // Go to definition
+    rename: true,                // Symbol renaming
+  ),
+);
+```
+
 </details>
 
 ---
@@ -679,6 +770,7 @@ CodeForge supports a variety of keyboard shortcuts for efficient editing:
 ### Suggestions & AI Completion
 - **Ctrl+.** — Show available LSP code actions.
 - **Ctrl + Shift + Space** — Show available LSP signature help.
+- **Ctrl + Alt** — Show LSP inlay hints.
 - **Arrow Up/Down** — Navigate through suggestions.
 - **Enter/Tab** — Accept current suggestion.
 - **Escape** — Close suggestions or hover details.

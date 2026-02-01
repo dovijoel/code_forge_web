@@ -206,3 +206,35 @@ This release establishes **CodeForge** as a powerful, production-ready code edit
     • `moveLineUp()`<br>
     • `callSignatureHelp()`<br>
 - ENHANCEMENT: LSP suggestions color
+
+## 7.0.0
+- FEATURE: Added `LspClientCapabilities` class to selectively enable/disable LSP features during initialization.<br>
+    • `semanticHighlighting` — Enable/disable semantic token highlighting<br>
+    • `codeCompletion` — Enable/disable code completion suggestions<br>
+    • `hoverInfo` — Enable/disable hover documentation<br>
+    • `codeAction` — Enable/disable code actions and quick fixes<br>
+    • `signatureHelp` — Enable/disable signature help<br>
+    • `documentColor` — Enable/disable document color detection<br>
+    • `documentHighlight` — Enable/disable document highlighting<br>
+    • `codeFolding` — Enable/disable code folding<br>
+    • `inlayHint` — Enable/disable inlay hints<br>
+    • `goToDefinition` — Enable/disable "go to definition"<br>
+    • `rename` — Enable/disable symbol renaming<br>
+- FEATURE: Added `deleteFoldRangeOnDeletingFirstLine` parameter to `CodeForge` widget as requested in [#24](https://github.com/heckmon/code_forge/issues/24). When set to `true`, deleting the entire first line of a folded block will delete the whole folded region.
+- ENHANCEMENT: Mobile context menu toolbar now persists after "Select All" action.
+- ENHANCEMENT: Repositioned code action bulb icon on mobile to avoid overlap with fold icons and gutter.
+- ENHANCEMENT: LSP methods now check capability flags before executing, returning early with appropriate empty values when features are disabled.
+- ENHANCEMENT: Dynamic capability building during LSP initialization — only enabled features are advertised to the language server.
+- FEATURE: Inlay hints and color picker:<br>
+    - Added LSP inlay hints and Colour picker as requested in [#22](https://github.com/heckmon/code_forge/issues/22).<br><br>
+    Inlay hint demo: https://github.com/user-attachments/assets/658fd76f-5650-4374-b44d-58db69813e66 <br>
+    Color pciker demo: https://github.com/user-attachments/assets/a7e1795c-83ca-411f-9c1d-81c8d4949926
+
+- FEATURE: Added doucment highlight as requested in [#22](https://github.com/heckmon/code_forge/issues/22).<br>
+  - demo: https://github.com/user-attachments/assets/593a524f-f5d7-45af-b5a5-d67cc1ed95fa
+
+- FEATURE: Added arrow key navigation for LSP suggestions in mobile as requested in [#21](https://github.com/heckmon/code_forge/issues/21).<br>
+   - demo: https://github.com/user-attachments/assets/8237dbdb-ba36-490d-9db2-4ffe1e24da8a
+
+- FIX: [#25](https://github.com/heckmon/code_forge/issues/25)
+- FIX: Fixed action icon misposition in mobile as requested in [#23](https://github.com/heckmon/code_forge/issues/23)

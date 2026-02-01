@@ -78,6 +78,7 @@ class LspStdioConfig extends LspConfig {
     required super.languageId,
     this.args,
     this.environment,
+    super.capabilities,
     super.disableWarning,
     super.disableError,
   });
@@ -86,6 +87,7 @@ class LspStdioConfig extends LspConfig {
     required String executable,
     required String workspacePath,
     required String languageId,
+    LspClientCapabilities capabilities = const LspClientCapabilities(),
     List<String>? args,
     Map<String, String>? environment,
     bool disableWarning = false,
@@ -99,6 +101,7 @@ class LspStdioConfig extends LspConfig {
       environment: environment,
       disableWarning: disableWarning,
       disableError: disableError,
+      capabilities: capabilities,
     );
     await config._startProcess();
     return config;

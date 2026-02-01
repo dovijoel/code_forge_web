@@ -16,6 +16,10 @@ sealed class LspConfig {
   /// For example, for rust-analyzer give "rust", for pyright-langserver, it is 'python' and so on.
   final String languageId;
 
+  /// The capabilities of the LSP client that are communicated to the language server during initialization.
+  /// This determines the features and requests that the client supports, allowing the server to tailor its responses accordingly.
+  final LspClientCapabilities capabilities;
+
   /// The workspace path of the document to be processed by the LSP.
   ///
   /// The workspacePath is the root directory of the project or workspace.
@@ -52,6 +56,7 @@ sealed class LspConfig {
   LspConfig({
     required this.workspacePath,
     required this.languageId,
+    this.capabilities = const LspClientCapabilities(),
     this.disableWarning = false,
     this.disableError = false,
   });
@@ -98,47 +103,7 @@ sealed class LspConfig {
         'initializationOptions': {
           'highlight': {'enabled': true},
         },
-        'capabilities': {
-          'workspace': {'applyEdit': true},
-          'textDocument': {
-            'completion': {
-              'completionItem': {
-                'resolveSupport': {
-                  'properties': [
-                    'documentaion',
-                    'detail',
-                    'additionalTextEdits',
-                  ],
-                },
-                'snippetSupport': false,
-              },
-            },
-            'signatureHelp': {
-              'dynamicRegistration': false,
-              'signatureInformation': {
-                'documentationFormat': ['markdown', 'plaintext'],
-                'parameterInformation': {'labelOffsetSupport': true},
-                'activeParameterSupport': true,
-              },
-              'contextSupport': true,
-            },
-            'synchronization': {'didSave': true, 'change': 1},
-            'publishDiagnostics': {'relatedInformation': true},
-            'hover': {
-              'contentFormat': ['markdown'],
-            },
-            'semanticTokens': {
-              'dynamicRegistration': false,
-              'tokenTypes': sematicMap['tokenTypes'],
-              'tokenModifiers': sematicMap['tokenModifiers'],
-              'formats': ['relative'],
-              'requests': {'full': true, 'range': true},
-              'multilineTokenSupport': true,
-              'overlappingTokenSupport': false,
-              'augmentsSyntaxTokens': true,
-            },
-          },
-        },
+        'capabilities': _buildCapabilities(),
       },
     );
 
@@ -161,6 +126,86 @@ sealed class LspConfig {
 
     await _sendNotification(method: 'initialized', params: {});
     isInitialized = true;
+  }
+
+  /// Builds the capabilities map based on enabled features.
+  Map<String, dynamic> _buildCapabilities() {
+    final textDocumentCapabilities = <String, dynamic>{};
+
+    if (capabilities.codeCompletion) {
+      textDocumentCapabilities['completion'] = {
+        'completionItem': {
+          'resolveSupport': {
+            'properties': ['documentaion', 'detail', 'additionalTextEdits'],
+          },
+          'snippetSupport': false,
+        },
+      };
+    }
+
+    if (capabilities.signatureHelp) {
+      textDocumentCapabilities['signatureHelp'] = {
+        'dynamicRegistration': false,
+        'signatureInformation': {
+          'documentationFormat': ['markdown', 'plaintext'],
+          'parameterInformation': {'labelOffsetSupport': true},
+          'activeParameterSupport': true,
+        },
+        'contextSupport': true,
+      };
+    }
+
+    if (capabilities.hoverInfo) {
+      textDocumentCapabilities['hover'] = {
+        'contentFormat': ['markdown'],
+      };
+    }
+
+    if (capabilities.semanticHighlighting) {
+      textDocumentCapabilities['semanticTokens'] = {
+        'dynamicRegistration': false,
+        'tokenTypes': sematicMap['tokenTypes'],
+        'tokenModifiers': sematicMap['tokenModifiers'],
+        'formats': ['relative'],
+        'requests': {'full': true, 'range': true},
+        'multilineTokenSupport': true,
+        'overlappingTokenSupport': false,
+        'augmentsSyntaxTokens': true,
+      };
+    }
+
+    if (capabilities.inlayHint) {
+      textDocumentCapabilities['inlayHint'] = {'dynamicRegistration': false};
+    }
+
+    if (capabilities.documentColor) {
+      textDocumentCapabilities['colorProvider'] = {
+        'dynamicRegistration': false,
+      };
+    }
+
+    if (capabilities.codeFolding) {
+      textDocumentCapabilities['foldingRange'] = {'dynamicRegistration': false};
+    }
+
+    if (capabilities.documentHighlight) {
+      textDocumentCapabilities['documentHighlight'] = {
+        'dynamicRegistration': false,
+      };
+    }
+
+    textDocumentCapabilities['synchronization'] = {
+      'didSave': true,
+      'change': 1,
+    };
+    textDocumentCapabilities['publishDiagnostics'] = {
+      'relatedInformation': true,
+    };
+
+    return {
+      'workspace': {'applyEdit': true},
+      'textDocument': textDocumentCapabilities,
+    };
   }
 
   Map<String, dynamic> _commonParams(String filePath, int line, int character) {
@@ -270,6 +315,7 @@ sealed class LspConfig {
     int line,
     int character,
   ) async {
+    if (!capabilities.codeCompletion) return [];
     List<LspCompletion> completion = [];
     final response = await _sendRequest(
       method: 'textDocument/completion',
@@ -319,6 +365,7 @@ sealed class LspConfig {
   /// This method is used internally by the [CodeForge], calling this with appropriate parameters will returns a [String].
   /// If the LSP server does not support hover or the location provided is invalid, it will return an empty string.
   Future<String> getHover(String filePath, int line, int character) async {
+    if (!capabilities.hoverInfo) return '';
     final response = await _sendRequest(
       method: 'textDocument/hover',
       params: _commonParams(filePath, line, character),
@@ -388,6 +435,15 @@ sealed class LspConfig {
     String? triggerCharacter,
     bool isRetrigger = false,
   }) async {
+    if (!capabilities.signatureHelp) {
+      return LspSignatureHelps(
+        activeParameter: -1,
+        activeSignature: -1,
+        documentation: "",
+        label: "",
+        parameters: [],
+      );
+    }
     final commonParams = _commonParams(filePath, line, character);
     commonParams.addAll({
       'context': {
@@ -461,6 +517,120 @@ sealed class LspConfig {
     );
   }
 
+  /// Gets all highlights for a symbol at the specified position in the document.
+  ///
+  /// Returns a list of DocumentHighlight objects, each containing a range and highlight kind.
+  /// Used for highlighting all occurrences of a symbol when clicked.
+  Future<List<dynamic>> getDocumentHighlight(
+    String filePath,
+    int line,
+    int character,
+  ) async {
+    if (!capabilities.documentHighlight) return [];
+    final response = await _sendRequest(
+      method: 'textDocument/documentHighlight',
+      params: _commonParams(filePath, line, character),
+    );
+
+    final result = response['result'];
+    if (result is! List) return [];
+    return result;
+  }
+
+  Future<Map<String, dynamic>> getColorPresentation(
+    String filePath, {
+    required double red,
+    required double blue,
+    required double green,
+    required double alpha,
+    required Map<String, dynamic> range,
+  }) async {
+    if (!capabilities.documentColor) return {'result': []};
+
+    /// Requests color presentation(s) for a color at a given range.
+    ///
+    /// Sends a `textDocument/colorPresentation` request to the language server
+    /// for the document at [filePath]. The [red], [green], [blue], and [alpha]
+    /// values should be in the 0.0..1.0 range. [range] is a LSP range map
+    /// (with `start`/`end` positions) that identifies where the color appears
+    /// in the document. Returns the raw server response as a map; callers
+    /// should inspect `response['result']` according to the server's
+    /// specification for color presentations.
+    final response = await _sendRequest(
+      method: "textDocument/colorPresentation",
+      params: {
+        'textDocument': {'uri': Uri.file(filePath).toString()},
+        'color': {'red': red, 'blue': blue, 'green': green, 'alpha': alpha},
+        'range': range,
+      },
+    );
+    return response;
+  }
+
+  /// Requests all color information found in the document.
+  ///
+  /// Sends a `textDocument/documentColor` request for the document at
+  /// [filePath]. The server typically returns a list of color information
+  /// (ranges and color values) in `response['result']`. This method returns
+  /// the raw server response as a map; callers should read `response['result']`
+  /// to obtain the list of color entries.
+  Future<Map<String, dynamic>> getDocumentColor(String filePath) async {
+    if (!capabilities.documentColor) return {'result': []};
+    final response = await _sendRequest(
+      method: "textDocument/documentColor",
+      params: {
+        'textDocument': {'uri': Uri.file(filePath).toString()},
+      },
+    );
+    return response;
+  }
+
+  /// Requests folding ranges for the given document.
+  ///
+  /// Sends a `textDocument/foldingRange` request for [filePath]. The server
+  /// returns folding ranges (if supported) describing regions that can be
+  /// folded in the editor. This method returns the raw server response as a
+  /// map; examine `response['result']` for the folding range list.
+  Future<Map<String, dynamic>> getLSPFoldRanges(String filePath) async {
+    if (!capabilities.codeFolding) return {'result': []};
+    final response = await _sendRequest(
+      method: "textDocument/foldingRange",
+      params: {
+        'textDocument': {'uri': Uri.file(filePath).toString()},
+      },
+    );
+    return response;
+  }
+
+  /// Requests inlay hints for a specific range in the document.
+  ///
+  /// Sends a `textDocument/inlayHint` request for [filePath] covering the
+  /// range from ([startLine], [startCharacter]) to ([endLine], [endCharacter]).
+  /// Inlay hints are small inline annotations (such as parameter names or
+  /// inferred types) provided by the server. This method returns the raw
+  /// server response as a map; callers should inspect `response['result']` to
+  /// obtain the list of inlay hints.
+  Future<Map<String, dynamic>> getInlayHints(
+    String filePath,
+    int startLine,
+    int startCharacter,
+    int endLine,
+    int endCharacter,
+  ) async {
+    if (!capabilities.inlayHint) return {'result': []};
+    final response = await _sendRequest(
+      method: "textDocument/inlayHint",
+      params: {
+        'textDocument': {'uri': Uri.file(filePath).toString()},
+        'range': {
+          'start': {'line': startLine, 'character': startCharacter},
+          'end': {'line': endLine, 'character': endCharacter},
+        },
+      },
+    );
+    return response;
+  }
+
   /// Gets the definition location for a symbol at the specified position.
   ///
   /// Returns a map with location information, or an empty map if not found.
@@ -469,6 +639,7 @@ sealed class LspConfig {
     int line,
     int character,
   ) async {
+    if (!capabilities.goToDefinition) return {};
     final response = await _sendRequest(
       method: 'textDocument/definition',
       params: _commonParams(filePath, line, character),
@@ -612,6 +783,7 @@ sealed class LspConfig {
     int character,
     String newName,
   ) async {
+    if (!capabilities.rename) return {};
     final response = await _sendRequest(
       method: 'textDocument/rename',
       params: {..._commonParams(filePath, line, character), 'newName': newName},
@@ -628,6 +800,7 @@ sealed class LspConfig {
     int line,
     int character,
   ) async {
+    if (!capabilities.rename) return null;
     final response = await _sendRequest(
       method: 'textDocument/prepareRename',
       params: _commonParams(filePath, line, character),
@@ -647,6 +820,7 @@ sealed class LspConfig {
     required int endCharacter,
     List<Map<String, dynamic>> diagnostics = const [],
   }) async {
+    if (!capabilities.codeAction) return [];
     final response = await _sendRequest(
       method: 'textDocument/codeAction',
       params: {
@@ -802,6 +976,7 @@ sealed class LspConfig {
   ///
   /// Returns a list of [LspSemanticToken] objects representing syntax tokens for highlighting.
   Future<List<LspSemanticToken>> getSemanticTokensFull(String filePath) async {
+    if (!capabilities.semanticHighlighting) return [];
     final response = await _sendRequest(
       method: 'textDocument/semanticTokens/full',
       params: {
@@ -911,22 +1086,19 @@ Map<CompletionItemType, Icon> completionItemIcons = {
   CompletionItemType.property: Icon(Icons.build, color: Colors.grey),
   CompletionItemType.unit: Icon(Icons.view_module, color: Colors.grey),
   CompletionItemType.value_: Icon(Icons.numbers, color: Colors.grey),
-  CompletionItemType.enum_: Icon(
-    CustomIcons.enum_,
-    color: const Color(0xffee9d28),
-  ),
-  CompletionItemType.keyword: Icon(CustomIcons.keyword, color: Colors.grey),
+  CompletionItemType.enum_: Icon(Icons.notes, color: const Color(0xffee9d28)),
+  CompletionItemType.keyword: Icon(Icons.wysiwyg_rounded, color: Colors.grey),
   CompletionItemType.snippet: Icon(CustomIcons.snippet, color: Colors.grey),
   CompletionItemType.color: Icon(Icons.color_lens, color: Colors.grey),
   CompletionItemType.file: Icon(Icons.insert_drive_file, color: Colors.grey),
   CompletionItemType.reference: Icon(CustomIcons.reference, color: Colors.grey),
   CompletionItemType.folder: Icon(Icons.folder, color: Colors.grey),
   CompletionItemType.enumMember: Icon(
-    CustomIcons.enum_,
+    Icons.notes,
     color: const Color(0xff75beff),
   ),
   CompletionItemType.constant: Icon(
-    CustomIcons.constant,
+    CustomIcons.variable,
     color: const Color(0xff75beff),
   ),
   CompletionItemType.struct: Icon(
@@ -948,10 +1120,7 @@ class CustomIcons {
   static const IconData method = IconData(0xe900, fontFamily: 'Method');
   static const IconData variable = IconData(0xe900, fontFamily: 'Variable');
   static const IconData class_ = IconData(0xe900, fontFamily: 'Class');
-  static const IconData enum_ = IconData(0x900, fontFamily: 'Enum');
-  static const IconData keyword = IconData(0x900, fontFamily: 'KeyWord');
   static const IconData reference = IconData(0x900, fontFamily: 'Reference');
-  static const IconData constant = IconData(0x900, fontFamily: 'Constant');
   static const IconData struct = IconData(0x900, fontFamily: 'Struct');
   static const IconData event = IconData(0x900, fontFamily: 'Event');
   static const IconData operator = IconData(0x900, fontFamily: 'Operator');
@@ -967,10 +1136,7 @@ class CustomIcons {
       'Method': 'assets/icons/method.ttf',
       'Variable': 'assets/icons/variable.ttf',
       'Class': 'assets/icons/class.ttf',
-      'Enum': 'assets/icons/enum.ttf',
-      'KeyWord': 'assets/icons/keyword.ttf',
       'Reference': 'assets/icons/reference.ttf',
-      'Constant': 'assets/icons/constant.ttf',
       'Struct': 'assets/icons/struct.ttf',
       'Event': 'assets/icons/event.ttf',
       'Operator': 'assets/icons/operator.ttf',
@@ -985,6 +1151,115 @@ class CustomIcons {
       await loader.load();
     }
   }
+}
+
+/// Defines the capabilities of the LSP (Language Server Protocol) client.
+///
+/// This class controls which LSP features are enabled or disabled during the
+/// language server initialization. Each boolean flag corresponds to a specific
+/// LSP feature. By default, all features are enabled.
+///
+/// These capabilities are sent to the language server during initialization,
+/// ensuring the server only advertises features that the client supports.
+class LspClientCapabilities {
+  /// Whether semantic token highlighting is enabled.
+  ///
+  /// When enabled, the server provides semantic tokens for syntax highlighting
+  /// beyond basic syntax. Controlled via 'textDocument/semanticTokens/full' request.
+  final bool semanticHighlighting;
+
+  /// Whether code completion is enabled.
+  ///
+  /// When enabled, the server provides completion suggestions as the user types.
+  /// Controlled via 'textDocument/completion' request.
+  final bool codeCompletion;
+
+  /// Whether hover information is enabled.
+  ///
+  /// When enabled, hovering over symbols displays documentation and type information.
+  /// Controlled via 'textDocument/hover' request.
+  final bool hoverInfo;
+
+  /// Whether code actions are enabled.
+  ///
+  /// When enabled, the server provides quick fixes and refactoring suggestions.
+  /// Controlled via 'textDocument/codeAction' request.
+  final bool codeAction;
+
+  /// Whether signature help is enabled.
+  ///
+  /// When enabled, function signatures and parameter information are displayed
+  /// as the user types function arguments.
+  /// Controlled via 'textDocument/signatureHelp' request.
+  final bool signatureHelp;
+
+  /// Whether document color information is enabled.
+  ///
+  /// When enabled, the server identifies color values in the document.
+  /// Controlled via 'textDocument/documentColor' request.
+  final bool documentColor;
+
+  /// Whether document highlight is enabled.
+  ///
+  /// When enabled, all occurrences of the symbol at cursor position are highlighted.
+  /// Controlled via 'textDocument/documentHighlight' request.
+  final bool documentHighlight;
+
+  /// Whether code folding is enabled.
+  ///
+  /// When enabled, the server provides folding range information for collapsible code blocks.
+  /// Controlled via 'textDocument/foldingRange' request.
+  final bool codeFolding;
+
+  /// Whether inlay hints are enabled.
+  ///
+  /// When enabled, the server provides inline annotations such as parameter names
+  /// and inferred types.
+  /// Controlled via 'textDocument/inlayHint' request.
+  final bool inlayHint;
+
+  /// Whether "go to definition" is enabled.
+  ///
+  /// When enabled, users can navigate to the definition of symbols.
+  /// Controlled via 'textDocument/definition' request.
+  final bool goToDefinition;
+
+  /// Whether symbol renaming is enabled.
+  ///
+  /// When enabled, users can rename symbols across the workspace.
+  /// Controlled via 'textDocument/rename' and 'textDocument/prepareRename' requests.
+  final bool rename;
+
+  /// Creates a new [LspClientCapabilities] instance with customizable feature flags.
+  ///
+  /// All parameters default to `true`, meaning all LSP features are enabled by default.
+  /// Set any parameter to `false` to disable that specific LSP feature.
+  ///
+  /// Parameters:
+  /// - [semanticHighlighting]: Enable semantic token highlighting (default: true)
+  /// - [codeCompletion]: Enable code completion suggestions (default: true)
+  /// - [hoverInfo]: Enable hover documentation (default: true)
+  /// - [codeAction]: Enable code actions and quick fixes (default: true)
+  /// - [signatureHelp]: Enable signature help (default: true)
+  /// - [documentColor]: Enable document color detection (default: true)
+  /// - [documentHighlight]: Enable document highlighting (default: true)
+  /// - [codeFolding]: Enable code folding (default: true)
+  /// - [inlayHint]: Enable inlay hints (default: true)
+  /// - [goToDefinition]: Enable "go to definition" (default: true)
+  /// - [rename]: Enable symbol renaming (default: true)
+  const LspClientCapabilities({
+    this.semanticHighlighting = true,
+    this.codeCompletion = true,
+    this.hoverInfo = true,
+    this.codeAction = true,
+    this.signatureHelp = true,
+    this.documentColor = true,
+    this.documentHighlight = true,
+    this.codeFolding = true,
+    this.inlayHint = true,
+    this.goToDefinition = true,
+    this.rename = true,
+  });
 }
 
 /// Represents a completion item in the LSP (Language Server Protocol).

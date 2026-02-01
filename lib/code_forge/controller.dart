@@ -35,8 +35,14 @@ import 'package:flutter/services.dart';
 class CodeForgeController implements DeltaTextInputClient {
   static const _flushDelay = Duration(milliseconds: 300);
   static const _semanticTokenDebounce = Duration(milliseconds: 500);
+  static const _documentColorDebounce = Duration(milliseconds: 50);
+  static const _documentHighlightDebounce = Duration(milliseconds: 300);
   final List<VoidCallback> _listeners = [];
+  final _isMobile = Platform.isAndroid || Platform.isIOS;
   Timer? _flushTimer, _semanticTokenTimer, _codeActionTimer, _syncTimer;
+  Timer? _documentColorTimer;
+  Timer? _foldRangesTimer;
+  Timer? _documentHighlightTimer;
   String? _cachedText, _bufferLineText, _openedFile;
   String _previousValue = "";
   TextSelection _prevSelection = const TextSelection.collapsed(offset: 0);
@@ -44,6 +50,7 @@ class CodeForgeController implements DeltaTextInputClient {
   int _bufferLineRopeStart = 0, _bufferLineOriginalLength = 0;
   int _cachedTextVersion = -1, _currentVersion = 0, _semanticTokensVersion = 0;
   int? dirtyLine, _bufferLineIndex;
+  bool deleteFoldRangeOnDeletingFirstLine = false;
   String? _lastSentText;
   TextSelection? _lastSentSelection;
   String? _lastTypedCharacter;
@@ -57,6 +64,15 @@ class CodeForgeController implements DeltaTextInputClient {
   StreamSubscription? _lspResponsesSubscription;
   Set<String> _wordCache = {};
   Timer? _debounceTimer;
+  final List<LineDecoration> _lineDecorations = [];
+  final List<GutterDecoration> _gutterDecorations = [];
+  GhostText? _ghostText;
+  List<InlayHint> _inlayHints = [];
+  List<DocumentColor> _documentColors = [];
+  List<DocumentHighlight> _documentHighlights = [];
+  Map<int, FoldRange>? _lspFoldRanges;
+  bool _inlayHintsVisible = false;
+  bool documentHighlightsChanged = false;
 
   CodeForgeController({this.lspConfig}) {
     if (lspConfig != null) {
@@ -72,6 +88,8 @@ class CodeForgeController implements DeltaTextInputClient {
           await lspConfig!.openDocument(openedFile!);
           _lspReady = true;
           await _fetchSemanticTokensFull();
+          await fetchDocumentColors();
+          await fetchLSPFoldRanges();
         } catch (e) {
           debugPrint('Error initializing LSP: $e');
         } finally {
@@ -233,6 +251,8 @@ class CodeForgeController implements DeltaTextInputClient {
     if (text != _previousValue && _lspReady) {
       await lspConfig!.updateDocument(openedFile!, text);
       _scheduleSemantictokenRefresh();
+      _scheduleDocumentColorRefresh();
+      _scheduleFoldRangesRefresh();
       if (text.length == _previousValue.length + 1 &&
           selection.extentOffset == _prevSelection.extentOffset + 1 &&
           _isTyping) {
@@ -261,9 +281,28 @@ class CodeForgeController implements DeltaTextInputClient {
     _prevSelection = selection;
   }
 
+  void _scheduleDocumentColorRefresh() {
+    _documentColorTimer?.cancel();
+    _documentColorTimer = Timer(_documentColorDebounce, () {
+      if (!_isDisposed && _lspReady) {
+        fetchDocumentColors();
+      }
+    });
+  }
+
+  void _scheduleFoldRangesRefresh() {
+    _foldRangesTimer?.cancel();
+    _foldRangesTimer = Timer(const Duration(milliseconds: 50), () {
+      if (!_isDisposed && _lspReady) {
+        fetchLSPFoldRanges();
+      }
+    });
+  }
+
   final ValueNotifier<(List<LspSemanticToken>?, int)> semanticTokens =
       ValueNotifier((null, 0));
   final ValueNotifier<List<dynamic>?> suggestionsNotifier = ValueNotifier(null);
+  final ValueNotifier<int?> selectedSuggestionNotifier = ValueNotifier(null);
   final ValueNotifier<List<LspErrors>> diagnosticsNotifier = ValueNotifier([]);
   final ValueNotifier<List<dynamic>?> codeActionsNotifier = ValueNotifier(null);
   final ValueNotifier<LspSignatureHelps?> signatureNotifier = ValueNotifier(
@@ -318,6 +357,12 @@ class CodeForgeController implements DeltaTextInputClient {
   /// (braces, indentation, etc.) when folding is enabled.
   Map<int, FoldRange?> foldings = {};
 
+  /// Checks if the given line is the first line of a currently folded range.
+  bool _isFirstLineOfFoldedRange(int lineIndex) {
+    final fold = foldings[lineIndex];
+    return fold != null && fold.isFolded;
+  }
+
   /// List of search highlights to display in the editor.
   ///
   /// Add [SearchHighlight] objects to this list to highlight
@@ -327,14 +372,11 @@ class CodeForgeController implements DeltaTextInputClient {
   /// Whether the search highlights have changed and need repaint.
   bool searchHighlightsChanged = false;
 
-  /// Line decorations for highlighting code ranges (git diff, bookmarks, etc.)
-  final List<LineDecoration> _lineDecorations = [];
+  /// Whether inlay hints have changed and need repaint
+  bool inlayHintsChanged = false;
 
-  /// Gutter decorations for showing indicators in the gutter (git status, breakpoints, etc.)
-  final List<GutterDecoration> _gutterDecorations = [];
-
-  /// Ghost text for AI suggestions or inline completions
-  GhostText? _ghostText;
+  /// Whether document colors have changed and need repaint
+  bool documentColorsChanged = false;
 
   /// Whether decorations have changed and need repaint
   bool decorationsChanged = false;
@@ -349,6 +391,30 @@ class CodeForgeController implements DeltaTextInputClient {
 
   /// Returns the current ghost text, if any
   GhostText? get ghostText => _ghostText;
+
+  /// Returns the current inlay hints
+  List<InlayHint> get inlayHints => List.unmodifiable(_inlayHints);
+
+  /// Returns whether inlay hints are currently visible
+  bool get inlayHintsVisible => _inlayHintsVisible;
+
+  /// Returns the current document colors
+  List<DocumentColor> get documentColors => List.unmodifiable(_documentColors);
+
+  /// Returns the current document highlights
+  List<DocumentHighlight> get documentHighlights =>
+      List.unmodifiable(_documentHighlights);
+
+  /// LSP-provided fold ranges, or null if not available.
+  /// If available, these should be used instead of the built-in fold range algorithm.
+  Map<int, FoldRange>? get lspFoldRanges => _lspFoldRanges;
+
+  /// Returns the index of the currently selected seuggestion if an LSP/normal suggestion is available.
+  ///
+  /// Note: This will only work on mobile devices.
+  int? get currentlySelectedSuggestion => selectedSuggestionNotifier.value;
+  set currentlySelectedSuggestion(int? value) =>
+      selectedSuggestionNotifier.value = value;
 
   /// Adds a line decoration to the editor.
   ///
@@ -480,6 +546,239 @@ class CodeForgeController implements DeltaTextInputClient {
     notifyListeners();
   }
 
+  /// Shows inlay hints in the editor.
+  ///
+  /// This fetches inlay hints from the LSP server for the visible range
+  /// and displays them inline in the code. Sets readOnly to true while
+  /// hints are visible to prevent user input.
+  ///
+  /// Inlay hints show type annotations (kind: 1) and parameter names (kind: 2).
+  ///
+  /// Example:
+  /// ```dart
+  /// // Call this when Ctrl+Alt is pressed
+  /// await controller.showInlayHints();
+  /// ```
+  Future<void> showInlayHints() async {
+    if (_inlayHintsVisible || lspConfig == null || openedFile == null) return;
+
+    _inlayHintsVisible = true;
+    readOnly = true;
+
+    try {
+      final endLine = lineCount > 500 ? 500 : lineCount;
+      final response = await lspConfig!.getInlayHints(
+        openedFile!,
+        0,
+        0,
+        endLine,
+        0,
+      );
+
+      final result = response['result'];
+      if (result is List) {
+        _inlayHints = result
+            .whereType<Map<String, dynamic>>()
+            .map((data) => InlayHint.fromLsp(data))
+            .toList();
+      } else {
+        _inlayHints = [];
+      }
+
+      inlayHintsChanged = true;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error fetching inlay hints: $e');
+      _inlayHintsVisible = false;
+      readOnly = false;
+    }
+  }
+
+  /// Hides inlay hints from the editor.
+  ///
+  /// This clears all inlay hints and restores the editor to editable mode.
+  ///
+  /// Example:
+  /// ```dart
+  /// // Call this when Ctrl+Alt is released
+  /// controller.hideInlayHints();
+  /// ```
+  void hideInlayHints() {
+    if (!_inlayHintsVisible) return;
+
+    _inlayHintsVisible = false;
+    _inlayHints = [];
+    readOnly = false;
+    inlayHintsChanged = true;
+    notifyListeners();
+  }
+
+  /// Sets inlay hints directly.
+  ///
+  /// Use this method if you want to provide custom inlay hints
+  /// instead of fetching them from the LSP server.
+  void setInlayHints(List<InlayHint> hints) {
+    _inlayHints = hints;
+    inlayHintsChanged = true;
+    notifyListeners();
+  }
+
+  /// Clears all inlay hints.
+  void clearInlayHints() {
+    _inlayHints = [];
+    inlayHintsChanged = true;
+    notifyListeners();
+  }
+
+  /// Fetches and displays document colors from the LSP server.
+  ///
+  /// Document colors are displayed as small color boxes inline with
+  /// color literals in the code (e.g., Colors.red, Color(0xFFFF0000)).
+  ///
+  /// Example:
+  /// ```dart
+  /// await controller.fetchDocumentColors();
+  /// ```
+  Future<void> fetchDocumentColors() async {
+    if (lspConfig == null || openedFile == null) return;
+
+    try {
+      final response = await lspConfig!.getDocumentColor(openedFile!);
+      final result = response['result'];
+
+      if (result is List) {
+        _documentColors = result
+            .whereType<Map<String, dynamic>>()
+            .map((data) => DocumentColor.fromLsp(data))
+            .toList();
+      } else {
+        _documentColors = [];
+      }
+
+      documentColorsChanged = true;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error fetching document colors: $e');
+    }
+  }
+
+  /// Sets document colors directly.
+  ///
+  /// Use this method if you want to provide custom document colors
+  /// instead of fetching them from the LSP server.
+  void setDocumentColors(List<DocumentColor> colors) {
+    _documentColors = colors;
+    documentColorsChanged = true;
+    notifyListeners();
+  }
+
+  /// Clears all document colors.
+  void clearDocumentColors() {
+    _documentColors = [];
+    documentColorsChanged = true;
+    notifyListeners();
+  }
+
+  /// Fetches document highlights for a symbol at the cursor position.
+  ///
+  /// This highlights all occurrences of the symbol at the given position.
+  /// Should be called with a debounce delay to avoid frequent calls.
+  ///
+  /// Example:
+  /// ```dart
+  /// await controller.fetchDocumentHighlights(10, 5);
+  /// ```
+  Future<void> fetchDocumentHighlights(int line, int character) async {
+    if (lspConfig == null || openedFile == null) return;
+
+    try {
+      final result = await lspConfig!.getDocumentHighlight(
+        openedFile!,
+        line,
+        character,
+      );
+
+      if (result.isNotEmpty) {
+        _documentHighlights = result
+            .whereType<Map<String, dynamic>>()
+            .map((data) => DocumentHighlight.fromLsp(data))
+            .toList();
+      } else {
+        _documentHighlights = [];
+      }
+
+      documentHighlightsChanged = true;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error fetching document highlights: $e');
+      _documentHighlights = [];
+      documentHighlightsChanged = true;
+      notifyListeners();
+    }
+  }
+
+  /// Schedules a document highlights refresh with debouncing.
+  ///
+  /// Cancels any pending refresh and schedules a new one.
+  void scheduleDocumentHighlightsRefresh(int line, int character) {
+    _documentHighlightTimer?.cancel();
+    _documentHighlightTimer = Timer(_documentHighlightDebounce, () {
+      fetchDocumentHighlights(line, character);
+    });
+  }
+
+  /// Clears all document highlights.
+  void clearDocumentHighlights() {
+    _documentHighlights = [];
+    documentHighlightsChanged = true;
+    notifyListeners();
+  }
+
+  /// Fetches fold ranges from the LSP server.
+  ///
+  /// If successful, these fold ranges will be used instead of the
+  /// built-in fold range detection algorithm.
+  ///
+  /// Example:
+  /// ```dart
+  /// await controller.fetchLSPFoldRanges();
+  /// ```
+  Future<void> fetchLSPFoldRanges() async {
+    if (lspConfig == null || openedFile == null) return;
+
+    try {
+      final response = await lspConfig!.getLSPFoldRanges(openedFile!);
+      final result = response['result'];
+
+      if (result is List && result.isNotEmpty) {
+        final Map<int, FoldRange> foldMap = {};
+        for (final item in result) {
+          if (item is Map<String, dynamic>) {
+            final startLine = item['startLine'] as int?;
+            final endLine = item['endLine'] as int?;
+            if (startLine != null && endLine != null && endLine > startLine) {
+              foldMap[startLine] = FoldRange(startLine, endLine);
+            }
+          }
+        }
+        _lspFoldRanges = foldMap.isEmpty ? null : foldMap;
+      } else {
+        _lspFoldRanges = null;
+      }
+
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error fetching LSP fold ranges: $e');
+      _lspFoldRanges = null;
+    }
+  }
+
+  /// Clears LSP fold ranges, forcing fallback to built-in algorithm.
+  void clearLSPFoldRanges() {
+    _lspFoldRanges = null;
+    notifyListeners();
+  }
+
   /// Convenience method to set git diff decorations for multiple line ranges.
   ///
   /// [addedRanges] - List of (startLine, endLine) for added lines (green)
@@ -582,8 +881,6 @@ class CodeForgeController implements DeltaTextInputClient {
     notifyListeners();
   }
 
-  // ============== End Decoration System ==============
-
   /// Whether the editor is in read-only mode.
   ///
   /// When true, the user cannot modify the text content.
@@ -622,6 +919,10 @@ class CodeForgeController implements DeltaTextInputClient {
   ///
   /// If [isShiftPressed] is true, extends the selection.
   void pressLetfArrowKey({bool isShiftPressed = false}) {
+    if (suggestionsNotifier.value != null) {
+      suggestionsNotifier.value = null;
+    }
+
     int newOffset;
     if (!isShiftPressed && selection.start != selection.end) {
       newOffset = selection.start;
@@ -647,6 +948,10 @@ class CodeForgeController implements DeltaTextInputClient {
   ///
   /// If [isShiftPressed] is true, extends the selection.
   void pressRightArrowKey({bool isShiftPressed = false}) {
+    if (suggestionsNotifier.value != null) {
+      suggestionsNotifier.value = null;
+    }
+
     int newOffset;
     if (!isShiftPressed && selection.start != selection.end) {
       newOffset = selection.end;
@@ -673,6 +978,22 @@ class CodeForgeController implements DeltaTextInputClient {
   /// If [isShiftPressed] is true, extends the selection.
   void pressUpArrowKey({bool isShiftPressed = false}) {
     final currentLine = getLineAtOffset(selection.extentOffset);
+
+    if (_isMobile &&
+        suggestionsNotifier.value != null &&
+        currentlySelectedSuggestion == null) {
+      currentlySelectedSuggestion = 0;
+      return;
+    }
+
+    if (_isMobile &&
+        suggestionsNotifier.value != null &&
+        currentlySelectedSuggestion != null) {
+      currentlySelectedSuggestion =
+          (currentlySelectedSuggestion! - 1) %
+          suggestionsNotifier.value!.length;
+      return;
+    }
 
     if (currentLine <= 0) {
       if (isShiftPressed) {
@@ -719,6 +1040,22 @@ class CodeForgeController implements DeltaTextInputClient {
   /// If [isShiftPressed] is true, extends the selection.
   void pressDownArrowKey({bool isShiftPressed = false}) {
     final currentLine = getLineAtOffset(selection.extentOffset);
+
+    if (_isMobile &&
+        suggestionsNotifier.value != null &&
+        currentlySelectedSuggestion == null) {
+      currentlySelectedSuggestion = 0;
+      return;
+    }
+
+    if (_isMobile &&
+        suggestionsNotifier.value != null &&
+        currentlySelectedSuggestion != null) {
+      currentlySelectedSuggestion =
+          (currentlySelectedSuggestion! + 1) %
+          suggestionsNotifier.value!.length;
+      return;
+    }
 
     if (currentLine >= lineCount - 1) {
       final endOffset = length;
@@ -792,6 +1129,10 @@ class CodeForgeController implements DeltaTextInputClient {
   ///
   /// If [isShiftPressed] is true, extends the selection to the line start.
   void pressHomeKey({bool isShiftPressed = false}) {
+    if (suggestionsNotifier.value != null) {
+      suggestionsNotifier.value = null;
+    }
+
     final currentLine = getLineAtOffset(selection.extentOffset);
     final lineStart = getLineStartOffset(currentLine);
 
@@ -811,6 +1152,10 @@ class CodeForgeController implements DeltaTextInputClient {
   ///
   /// If [isShiftPressed] is true, extends the selection to the line end.
   void pressEndKey({bool isShiftPressed = false}) {
+    if (suggestionsNotifier.value != null) {
+      suggestionsNotifier.value = null;
+    }
+
     final currentLine = getLineAtOffset(selection.extentOffset);
     final lineText = getLineText(currentLine);
     final lineStart = getLineStartOffset(currentLine);
@@ -1206,6 +1551,7 @@ class CodeForgeController implements DeltaTextInputClient {
     setSelectionSilently(TextSelection.collapsed(offset: lineEnd + 1));
   }
 
+  @protected
   @override
   void updateEditingValueWithDeltas(List<TextEditingDelta> textEditingDeltas) {
     if (readOnly) return;
@@ -1227,6 +1573,19 @@ class CodeForgeController implements DeltaTextInputClient {
       _lastSentText = null;
 
       if (delta is TextEditingDeltaInsertion) {
+        if (delta.textInserted == '\n' &&
+            suggestionsNotifier.value != null &&
+            _isMobile &&
+            currentlySelectedSuggestion != null) {
+          final sugg = suggestionsNotifier.value![currentlySelectedSuggestion!];
+          final text = sugg is LspCompletion ? sugg.label : sugg as String;
+          insertAtCurrentCursor(text, replaceTypedChar: true);
+          suggestionsNotifier.value = null;
+          currentlySelectedSuggestion = null;
+          callSignatureHelp();
+          continue;
+        }
+
         if (delta.textInserted.length == 1) {
           _lastTypedCharacter = delta.textInserted;
         }
@@ -1351,6 +1710,55 @@ class CodeForgeController implements DeltaTextInputClient {
 
     if (sel.start < sel.end) {
       _flushBuffer();
+
+      // Check if we're deleting the entire first line of a folded range
+      if (deleteFoldRangeOnDeletingFirstLine) {
+        final startLine = _rope.getLineAtOffset(sel.start);
+        final endLine = _rope.getLineAtOffset(sel.end);
+
+        // Check if selection is on a single line (or spans to next line's start)
+        if (startLine == endLine ||
+            (startLine + 1 == endLine &&
+                sel.end == _rope.getLineStartOffset(endLine))) {
+          final lineStart = _rope.getLineStartOffset(startLine);
+          final lineText = _rope.getLineText(startLine);
+          final lineEnd = lineStart + lineText.length;
+
+          // Check if the entire line is selected (whole line or line without newline)
+          final selectsWholeLine = sel.start <= lineStart && sel.end >= lineEnd;
+
+          if (selectsWholeLine && _isFirstLineOfFoldedRange(startLine)) {
+            // Delete the entire folded range
+            final foldRange = foldings[startLine]!;
+            final foldStart = _rope.getLineStartOffset(foldRange.startIndex);
+            final foldEndLine = foldRange.endIndex;
+            final foldEndLineText = _rope.getLineText(foldEndLine);
+            final foldEnd =
+                _rope.getLineStartOffset(foldEndLine) + foldEndLineText.length;
+
+            deletedText = _rope.substring(foldStart, foldEnd);
+            _rope.delete(foldStart, foldEnd);
+            _currentVersion++;
+            _selection = TextSelection.collapsed(offset: foldStart);
+            dirtyLine = _rope.getLineAtOffset(foldStart.clamp(0, _rope.length));
+            lineStructureChanged = true;
+
+            // Remove the fold from the foldings map
+            foldings.remove(startLine);
+
+            _recordDeletion(
+              foldStart,
+              deletedText,
+              selectionBefore,
+              _selection,
+            );
+            _syncToConnection();
+            notifyListeners();
+            return;
+          }
+        }
+      }
+
       deletedText = _rope.substring(sel.start, sel.end);
       _rope.delete(sel.start, sel.end);
       _currentVersion++;
@@ -1450,6 +1858,55 @@ class CodeForgeController implements DeltaTextInputClient {
 
     if (sel.start < sel.end) {
       _flushBuffer();
+
+      // Check if we're deleting the entire first line of a folded range
+      if (deleteFoldRangeOnDeletingFirstLine) {
+        final startLine = _rope.getLineAtOffset(sel.start);
+        final endLine = _rope.getLineAtOffset(sel.end);
+
+        // Check if selection is on a single line (or spans to next line's start)
+        if (startLine == endLine ||
+            (startLine + 1 == endLine &&
+                sel.end == _rope.getLineStartOffset(endLine))) {
+          final lineStart = _rope.getLineStartOffset(startLine);
+          final lineText = _rope.getLineText(startLine);
+          final lineEnd = lineStart + lineText.length;
+
+          // Check if the entire line is selected (whole line or line without newline)
+          final selectsWholeLine = sel.start <= lineStart && sel.end >= lineEnd;
+
+          if (selectsWholeLine && _isFirstLineOfFoldedRange(startLine)) {
+            // Delete the entire folded range
+            final foldRange = foldings[startLine]!;
+            final foldStart = _rope.getLineStartOffset(foldRange.startIndex);
+            final foldEndLine = foldRange.endIndex;
+            final foldEndLineText = _rope.getLineText(foldEndLine);
+            final foldEnd =
+                _rope.getLineStartOffset(foldEndLine) + foldEndLineText.length;
+
+            deletedText = _rope.substring(foldStart, foldEnd);
+            _rope.delete(foldStart, foldEnd);
+            _currentVersion++;
+            _selection = TextSelection.collapsed(offset: foldStart);
+            dirtyLine = _rope.getLineAtOffset(foldStart.clamp(0, _rope.length));
+            lineStructureChanged = true;
+
+            // Remove the fold from the foldings map
+            foldings.remove(startLine);
+
+            _recordDeletion(
+              foldStart,
+              deletedText,
+              selectionBefore,
+              _selection,
+            );
+            _syncToConnection();
+            notifyListeners();
+            return;
+          }
+        }
+      }
+
       deletedText = _rope.substring(sel.start, sel.end);
       _rope.delete(sel.start, sel.end);
       _currentVersion++;
@@ -1536,39 +1993,61 @@ class CodeForgeController implements DeltaTextInputClient {
     }
   }
 
+  @protected
   @override
   void connectionClosed() {
     connection = null;
   }
 
+  @protected
   @override
   AutofillScope? get currentAutofillScope => null;
 
+  @protected
   @override
   TextEditingValue? get currentTextEditingValue =>
       TextEditingValue(text: text, selection: _selection);
 
+  @protected
   @override
   void didChangeInputControl(
     TextInputControl? oldControl,
     TextInputControl? newControl,
   ) {}
+
+  @protected
   @override
   void insertContent(KeyboardInsertedContent content) {}
+
+  @protected
   @override
   void insertTextPlaceholder(Size size) {}
+
+  @protected
   @override
   void performAction(TextInputAction action) {}
+
+  @protected
   @override
   void performPrivateCommand(String action, Map<String, dynamic> data) {}
+
+  @protected
   @override
   void performSelector(String selectorName) {}
+
+  @protected
   @override
   void removeTextPlaceholder() {}
+
+  @protected
   @override
   void showAutocorrectionPromptRect(int start, int end) {}
+
+  @protected
   @override
   void showToolbar() {}
+
+  @protected
   @override
   void updateEditingValue(TextEditingValue value) {
     text = value.text;
@@ -1578,6 +2057,7 @@ class CodeForgeController implements DeltaTextInputClient {
     notifyListeners();
   }
 
+  @protected
   @override
   void updateFloatingCursor(RawFloatingCursorPoint point) {}
 
@@ -2092,6 +2572,9 @@ class CodeForgeController implements DeltaTextInputClient {
     _debounceTimer?.cancel();
     _flushTimer?.cancel();
     _codeActionTimer?.cancel();
+    _documentColorTimer?.cancel();
+    _foldRangesTimer?.cancel();
+    _documentHighlightTimer?.cancel();
     _lspResponsesSubscription?.cancel();
     _listeners.clear();
     connection?.close();

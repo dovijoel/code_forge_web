@@ -560,3 +560,198 @@ class GhostText {
     this.shouldPersist = false,
   });
 }
+
+/// Represents an inlay hint to be displayed inline in the code editor.
+///
+/// Inlay hints are small pieces of text displayed inline with the code,
+/// typically showing type annotations, parameter names, or other contextual
+/// information from the language server.
+///
+/// Example:
+/// ```dart
+/// InlayHint(
+///   line: 10,
+///   column: 15,
+///   text: 'String',
+///   kind: InlayHintKind.type,
+/// )
+/// ```
+class InlayHint {
+  /// The line where the inlay hint should appear (0-based)
+  final int line;
+
+  /// The column (character position) where the inlay hint should appear (0-based)
+  final int column;
+
+  /// The text content of the inlay hint
+  final String text;
+
+  /// The kind of inlay hint (type annotation or parameter name)
+  final InlayHintKind kind;
+
+  /// Whether to add padding to the right of the hint
+  final bool paddingRight;
+
+  /// Whether to add padding to the left of the hint
+  final bool paddingLeft;
+
+  /// Optional location information for navigation
+  final Map<String, dynamic>? location;
+
+  const InlayHint({
+    required this.line,
+    required this.column,
+    required this.text,
+    required this.kind,
+    this.paddingRight = false,
+    this.paddingLeft = false,
+    this.location,
+  });
+
+  /// Creates an InlayHint from LSP response data
+  factory InlayHint.fromLsp(Map<String, dynamic> data) {
+    final position = data['position'] as Map<String, dynamic>;
+    final kind = data['kind'] as int? ?? 1;
+    final label = data['label'];
+    final paddingRight = data['paddingRight'] as bool? ?? false;
+    final paddingLeft = data['paddingLeft'] as bool? ?? false;
+
+    String text;
+    Map<String, dynamic>? location;
+
+    if (label is List && label.isNotEmpty) {
+      final parts = <String>[];
+      for (final part in label) {
+        if (part is Map<String, dynamic>) {
+          parts.add(part['value'] as String? ?? '');
+          if (part.containsKey('location')) {
+            location = part['location'] as Map<String, dynamic>?;
+          }
+        } else if (part is String) {
+          parts.add(part);
+        }
+      }
+      text = parts.join();
+    } else if (label is String) {
+      text = label;
+    } else {
+      text = '';
+    }
+
+    return InlayHint(
+      line: position['line'] as int,
+      column: position['character'] as int,
+      text: text,
+      kind: kind == 1 ? InlayHintKind.type : InlayHintKind.parameter,
+      paddingRight: paddingRight,
+      paddingLeft: paddingLeft,
+      location: location,
+    );
+  }
+}
+
+/// The kind of inlay hint
+enum InlayHintKind {
+  /// Type annotation hint (kind: 1 in LSP)
+  type,
+
+  /// Parameter name hint (kind: 2 in LSP)
+  parameter,
+}
+
+/// Represents a document color to be displayed in the code editor.
+///
+/// Document colors show a small color box inline with color literals,
+/// allowing users to visualize the color directly in the code.
+///
+/// Example:
+/// ```dart
+/// DocumentColor(
+///   line: 10,
+///   startColumn: 15,
+///   endColumn: 25,
+///   color: Color(0xFFFF0000),
+/// )
+/// ```
+class DocumentColor {
+  /// The line where the color appears (0-based)
+  final int line;
+
+  /// The start column of the color range (0-based)
+  final int startColumn;
+
+  /// The end column of the color range (0-based)
+  final int endColumn;
+
+  /// The actual color value
+  final Color color;
+
+  const DocumentColor({
+    required this.line,
+    required this.startColumn,
+    required this.endColumn,
+    required this.color,
+  });
+
+  /// Creates a DocumentColor from LSP response data
+  factory DocumentColor.fromLsp(Map<String, dynamic> data) {
+    final range = data['range'] as Map<String, dynamic>;
+    final start = range['start'] as Map<String, dynamic>;
+    final end = range['end'] as Map<String, dynamic>;
+    final colorData = data['color'] as Map<String, dynamic>;
+
+    final red = (colorData['red'] as num).toDouble();
+    final green = (colorData['green'] as num).toDouble();
+    final blue = (colorData['blue'] as num).toDouble();
+    final alpha = (colorData['alpha'] as num).toDouble();
+
+    return DocumentColor(
+      line: start['line'] as int,
+      startColumn: start['character'] as int,
+      endColumn: end['character'] as int,
+      color: Color.fromARGB(
+        (alpha * 255).round(),
+        (red * 255).round(),
+        (green * 255).round(),
+        (blue * 255).round(),
+      ),
+    );
+  }
+}
+
+/// Represents a document highlight from LSP.
+/// Used to highlight all occurrences of a symbol in the document.
+class DocumentHighlight {
+  /// The start line of the highlight (0-based)
+  final int startLine;
+
+  /// The start column of the highlight (0-based)
+  final int startColumn;
+
+  /// The end line of the highlight (0-based)
+  final int endLine;
+
+  /// The end column of the highlight (0-based)
+  final int endColumn;
+
+  const DocumentHighlight({
+    required this.startLine,
+    required this.startColumn,
+    required this.endLine,
+    required this.endColumn,
+  });
+
+  /// Creates a DocumentHighlight from LSP response data
+  factory DocumentHighlight.fromLsp(Map<String, dynamic> data) {
+    final range = data['range'] as Map<String, dynamic>;
+    final start = range['start'] as Map<String, dynamic>;
+    final end = range['end'] as Map<String, dynamic>;
+
+    return DocumentHighlight(
+      startLine: start['line'] as int,
+      startColumn: start['character'] as int,
+      endLine: end['line'] as int,
+      endColumn: end['character'] as int,
+    );
+  }
+}
