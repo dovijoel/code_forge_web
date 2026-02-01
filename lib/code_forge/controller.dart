@@ -2185,7 +2185,7 @@ class CodeForgeController implements DeltaTextInputClient {
             ? searchText[index + word.length]
             : '';
 
-        final isWordChar = RegExp(r'\w');
+        final isWordChar = RegExp(r'[\w\u0600-\u06FF]');
         final beforeIsWord = before.isNotEmpty && isWordChar.hasMatch(before);
         final afterIsWord = after.isNotEmpty && isWordChar.hasMatch(after);
 
@@ -2516,6 +2516,7 @@ class CodeForgeController implements DeltaTextInputClient {
             (code >= 48 && code <= 57) ||
             (code >= 65 && code <= 90) ||
             (code >= 97 && code <= 122) ||
+            (code >= 0x0600 && code <= 0x06FF) ||
             code == 95;
         if (!isIdentChar) break;
         i--;
@@ -2526,6 +2527,7 @@ class CodeForgeController implements DeltaTextInputClient {
       final isStartOk =
           (firstCode >= 65 && firstCode <= 90) ||
           (firstCode >= 97 && firstCode <= 122) ||
+          (firstCode >= 0x0600 && firstCode <= 0x06FF) ||
           firstCode == 95;
       if (!isStartOk) return '';
       return lineText.substring(start, col);
@@ -2539,6 +2541,7 @@ class CodeForgeController implements DeltaTextInputClient {
           (code >= 48 && code <= 57) ||
           (code >= 65 && code <= 90) ||
           (code >= 97 && code <= 122) ||
+          (code >= 0x0600 && code <= 0x06FF) ||
           code == 95;
       if (!isIdentChar) break;
       i--;
@@ -2549,6 +2552,7 @@ class CodeForgeController implements DeltaTextInputClient {
     final isStartOk =
         (firstCode >= 65 && firstCode <= 90) ||
         (firstCode >= 97 && firstCode <= 122) ||
+        (firstCode >= 0x0600 && firstCode <= 0x06FF) ||
         firstCode == 95;
     if (!isStartOk) return '';
     return text.substring(start, safeOffset);
@@ -2755,7 +2759,9 @@ class CodeForgeController implements DeltaTextInputClient {
   bool _isAlpha(String s) {
     if (s.isEmpty) return false;
     final code = s.codeUnitAt(0);
-    return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    return (code >= 65 && code <= 90) || 
+           (code >= 97 && code <= 122) ||
+           (code >= 0x0600 && code <= 0x06FF);
   }
 
   Future<void> _fetchSemanticTokensFull() async {

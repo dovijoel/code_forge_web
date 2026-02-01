@@ -4,7 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:code_forge/code_forge.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:re_highlight/languages/dart.dart';
+// import 'package:re_highlight/languages/dart.dart';
 import 'package:re_highlight/styles/atom-one-dark-reasonable.dart';
 
 void main() {
@@ -20,10 +20,10 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   final undoController = UndoRedoController();
-  final absFilePath = p.join(Directory.current.path, "lib/example_code.dart");
+  final absFilePath = p.join(Directory.current.path, "lib/alif.alif");
   CodeForgeController? codeController;
 
-  Future<LspConfig> getLsp() async {
+  /* Future<LspConfig> getLsp() async {
     final absWorkspacePath = p.join(Directory.current.path, "lib");
     final data = await LspStdioConfig.start(
       executable: "dart",
@@ -32,7 +32,7 @@ class _MyAppState extends State<MyApp> {
       languageId: "dart",
     );
     return data;
-  }
+  } */
 
   @override
   void initState() {
@@ -53,26 +53,9 @@ class _MyAppState extends State<MyApp> {
           },
         ),
         body: SafeArea(
-          child: FutureBuilder<LspConfig>(
-            future: getLsp(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-
-              if (!snapshot.hasData) {
-                return const Center(child: Text("Failed to load LSP"));
-              }
-
-              final lspConfig = snapshot.data!;
-              if (codeController == null ||
-                  codeController!.lspConfig != lspConfig) {
-                codeController = CodeForgeController(lspConfig: lspConfig);
-              }
-
-              return CodeForge(
+          child: CodeForge(
                 undoController: undoController,
-                language: langDart,
+                // language: langDart,
                 editorTheme: atomOneDarkReasonableTheme,
                 controller: codeController,
                 textStyle: GoogleFonts.jetBrainsMono(),
@@ -87,9 +70,7 @@ class _MyAppState extends State<MyApp> {
                 ),
                 finderBuilder: (c, controller) =>
                     FindPanelView(controller: controller),
-              );
-            },
-          ),
+              )
         ),
       ),
     );

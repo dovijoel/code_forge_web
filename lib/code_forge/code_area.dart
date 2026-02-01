@@ -8329,14 +8329,21 @@ class _CodeFieldRenderer extends RenderBox implements MouseTrackerAnnotation {
     markNeedsPaint();
   }
 
+  /// Checks if a character is a word boundary.
+  ///
+  /// Returns true for whitespace and non-word characters.
+  /// Supports Latin and Arabic (\u0600-\u06FF) word characters.
   bool _isWordBoundary(String char) {
-    return char.trim().isEmpty || !RegExp(r'\w').hasMatch(char);
+    return char.trim().isEmpty || !RegExp(r'[\w\u0600-\u06FF]').hasMatch(char);
   }
 
+  /// Checks if the character at the given offset is a word character.
+  ///
+  /// Supports Latin and Arabic (\u0600-\u06FF) characters.
   bool _isOffsetOverWord(int offset) {
     final text = controller.text;
     if (offset < 0 || offset >= text.length) return false;
-    return RegExp(r'\w').hasMatch(text[offset]);
+    return RegExp(r'[\w\u0600-\u06FF]').hasMatch(text[offset]);
   }
 
   Map<String, int> _offsetToLineChar(int offset) {
