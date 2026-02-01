@@ -446,30 +446,43 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
     _focusNode.addListener(() {
       debugPrint('[CodeForge] Focus changed: hasFocus=${_focusNode.hasFocus}, readOnly=$_readOnly');
       if (_focusNode.hasFocus && !_readOnly) {
-        if (_connection == null || !_connection!.attached) {
-          debugPrint('[CodeForge] Attaching TextInputConnection...');
-          _connection = TextInput.attach(
-            _controller,
-            TextInputConfiguration(
-              readOnly: false,
-              enableDeltaModel: true,
-              enableSuggestions: widget.enableKeyboardSuggestions,
-              inputType: widget.keyboardType,
-              inputAction: TextInputAction.newline,
-              autocorrect: false,
-            ),
-          );
-
-          _controller.connection = _connection;
-          _connection!.show();
-          _connection!.setEditingState(
-            TextEditingValue(
-              text: _controller.text,
-              selection: _controller.selection,
-            ),
-          );
-          debugPrint('[CodeForge] TextInputConnection attached and shown');
+        // Always close existing connection and create fresh one on focus gain
+        // This is critical for web platform where connections become stale
+        if (_connection != null) {
+          debugPrint('[CodeForge] Closing existing connection before re-attach');
+          _connection!.close();
+          _connection = null;
+          _controller.connection = null;
         }
+        
+        debugPrint('[CodeForge] Attaching TextInputConnection...');
+        _connection = TextInput.attach(
+          _controller,
+          TextInputConfiguration(
+            readOnly: false,
+            enableDeltaModel: true,
+            enableSuggestions: widget.enableKeyboardSuggestions,
+            inputType: widget.keyboardType,
+            inputAction: TextInputAction.newline,
+            autocorrect: false,
+          ),
+        );
+
+        _controller.connection = _connection;
+        _connection!.show();
+        _connection!.setEditingState(
+          TextEditingValue(
+            text: _controller.text,
+            selection: _controller.selection,
+          ),
+        );
+        debugPrint('[CodeForge] TextInputConnection attached and shown');
+      } else if (!_focusNode.hasFocus && _connection != null) {
+        // Explicitly close connection when losing focus
+        debugPrint('[CodeForge] Closing TextInputConnection on focus loss');
+        _connection!.close();
+        _connection = null;
+        _controller.connection = null;
       }
     });
 
