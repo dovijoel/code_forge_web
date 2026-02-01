@@ -1585,6 +1585,7 @@ class CodeForgeController implements DeltaTextInputClient {
       _lastSentText = null;
 
       if (delta is TextEditingDeltaInsertion) {
+        debugPrint('[CodeForge Controller] TextEditingDeltaInsertion: textInserted="${delta.textInserted}", insertionOffset=${delta.insertionOffset}');
         if (delta.textInserted == '\n' &&
             suggestionsNotifier.value != null &&
             _isMobile &&
@@ -1604,11 +1605,13 @@ class CodeForgeController implements DeltaTextInputClient {
         if (delta.textInserted.isNotEmpty && _isAlpha(delta.textInserted)) {
           typingDetected = true;
         }
+        debugPrint('[CodeForge Controller] Calling _handleInsertion');
         _handleInsertion(
           delta.insertionOffset,
           delta.textInserted,
           delta.selection,
         );
+        debugPrint('[CodeForge Controller] After _handleInsertion, text length=${text.length}');
       } else if (delta is TextEditingDeltaDeletion) {
         _handleDeletion(delta.deletedRange, delta.selection);
       } else if (delta is TextEditingDeltaReplacement) {
