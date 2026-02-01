@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../code_forge.dart';
 import 'rope.dart';
+import 'custom_completion.dart';
 
 // Conditional import for platform-specific code (File, etc.)
 import '../LSP/lsp_io_stub.dart' if (dart.library.io) '../LSP/lsp_io_impl.dart';
@@ -75,6 +76,10 @@ class CodeForgeController implements DeltaTextInputClient {
   Map<int, FoldRange>? _lspFoldRanges;
   bool _inlayHintsVisible = false;
   bool documentHighlightsChanged = false;
+  
+  // Custom completion provider support
+  final Map<String, RegisteredCompletionProvider> _completionProviders = {};
+  final Set<String> _allTriggerCharacters = {};
 
   CodeForgeController({this.lspConfig}) {
     if (lspConfig != null) {
@@ -2562,6 +2567,136 @@ class CodeForgeController implements DeltaTextInputClient {
     if (_openedFile != null) {
       text = File(_openedFile!).readAsStringSync();
     }
+  }
+
+  // ==========================================================================
+  // Custom Completion Provider API
+  // ==========================================================================
+
+  /// Register a custom completion provider.
+  /// 
+  /// The provider will be called when completion is triggered by one of the
+  /// specified [triggerCharacters] or when manually invoked.
+  /// 
+  /// The [id] must be unique; registering with an existing id replaces the provider.
+  /// 
+  /// Example:
+  /// ```dart
+  /// controller.registerCompletionProvider(
+  ///   id: 'sql',
+  ///   triggerCharacters: [' ', '.', ',', '('],
+  ///   provider: (params) async {
+  ///     return [
+  ///       CompletionItem(label: 'SELECT', kind: CompletionItemKind.keyword),
+  ///     ];
+  ///   },
+  /// );
+  /// ```
+  void registerCompletionProvider({
+    required String id,
+    required List<String> triggerCharacters,
+    required CompletionProvider provider,
+  }) {
+    _completionProviders[id] = RegisteredCompletionProvider(
+      id: id,
+      triggerCharacters: triggerCharacters,
+      provider: provider,
+    );
+    _rebuildTriggerCharacters();
+  }
+
+  /// Unregister a previously registered completion provider.
+  void unregisterCompletionProvider(String id) {
+    _completionProviders.remove(id);
+    _rebuildTriggerCharacters();
+  }
+
+  /// Check if a completion provider with the given [id] is registered.
+  bool hasCompletionProvider(String id) {
+    return _completionProviders.containsKey(id);
+  }
+
+  /// Check if a character triggers completion from any registered provider.
+  bool isTriggerCharacter(String char) {
+    return _allTriggerCharacters.contains(char);
+  }
+
+  /// Get all registered trigger characters across all providers.
+  Set<String> get allTriggerCharacters => Set.unmodifiable(_allTriggerCharacters);
+
+  /// Rebuild the set of all trigger characters from all providers.
+  void _rebuildTriggerCharacters() {
+    _allTriggerCharacters.clear();
+    for (final provider in _completionProviders.values) {
+      _allTriggerCharacters.addAll(provider.triggerCharacters);
+    }
+  }
+
+  /// Get completions from all registered providers.
+  /// 
+  /// Results from all providers are merged and sorted by [sortPriority].
+  /// If a provider throws an error, it is caught and logged, and completions
+  /// from other providers are still returned.
+  Future<List<CompletionItem>> getCompletions(CompletionParams params) async {
+    if (_completionProviders.isEmpty) {
+      return [];
+    }
+
+    final results = <CompletionItem>[];
+    
+    for (final provider in _completionProviders.values) {
+      // Skip providers that don't handle this trigger character
+      if (params.context?.triggerKind == CompletionTriggerKind.triggerCharacter &&
+          params.context?.triggerCharacter != null &&
+          !provider.triggerCharacters.contains(params.context!.triggerCharacter)) {
+        continue;
+      }
+
+      try {
+        final items = await provider.provider(params);
+        results.addAll(items);
+      } catch (e, stackTrace) {
+        debugPrint('Error getting completions from provider ${provider.id}: $e');
+        debugPrint('$stackTrace');
+      }
+    }
+
+    // Sort by priority (lower = higher priority)
+    results.sort((a, b) {
+      final aPriority = a.sortPriority ?? 100;
+      final bPriority = b.sortPriority ?? 100;
+      if (aPriority != bPriority) {
+        return aPriority.compareTo(bPriority);
+      }
+      return a.label.compareTo(b.label);
+    });
+
+    return results;
+  }
+
+  /// Build CompletionParams from current editor state.
+  /// 
+  /// This is a helper method for widgets to create params when triggering
+  /// completion from keyboard input.
+  CompletionParams buildCompletionParams({
+    String? triggerCharacter,
+    CompletionTriggerKind triggerKind = CompletionTriggerKind.invoked,
+  }) {
+    final currentLine = getLineAtOffset(selection.baseOffset);
+    final lineStart = getLineStartOffset(currentLine);
+    final characterInLine = selection.baseOffset - lineStart;
+    
+    return CompletionParams(
+      textDocument: TextDocumentIdentifier(uri: openedFile ?? 'editor://default'),
+      position: CompletionPosition(line: currentLine, character: characterInLine),
+      context: CompletionContext(
+        triggerKind: triggerKind,
+        triggerCharacter: triggerCharacter,
+      ),
+      textBeforeCursor: text.substring(lineStart, selection.baseOffset),
+      currentLineText: getLineText(currentLine),
+      fullText: text,
+    );
   }
 
   /// Disposes of the controller and releases resources.
