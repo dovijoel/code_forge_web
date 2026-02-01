@@ -550,7 +550,9 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      debugPrint('[CodeForge] Post-frame callback, autoFocus=${widget.autoFocus}');
       if (widget.autoFocus) {
+        debugPrint('[CodeForge] Requesting focus via autoFocus');
         _focusNode.requestFocus();
       }
     });
@@ -1109,6 +1111,7 @@ class _CodeForgeState extends State<CodeForge> with TickerProviderStateMixin {
                       controller: _hscrollController,
                       child: GestureDetector(
                         onTap: () {
+                          debugPrint('[CodeForge] GestureDetector onTap - requesting focus');
                           _focusNode.requestFocus();
                           if (_contextMenuOffsetNotifier.value.dx >= 0) {
                             _contextMenuOffsetNotifier.value = const Offset(
