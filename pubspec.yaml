@@ -1,10 +1,10 @@
-name: code_forge
-description: "A sophisticated code editor package with AI completion, LSP support, syntax highlighting, and advanced editing capabilities."
+name: code_forge_web
+description: "A sophisticated code editor package with AI completion, LSP support, syntax highlighting, and advanced editing capabilities. Web-compatible fork."
 version: 7.0.0
-homepage: https://github.com/heckmon/code_forge
+homepage: https://github.com/dovijoel/code_forge_web
 
 environment:
-  sdk: ^3.10.8
+  sdk: ^3.10.1
   flutter: ">=1.17.0"
 
 dependencies:

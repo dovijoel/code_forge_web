@@ -7,3 +7,6 @@ export 'code_forge/scroll.dart';
 export 'code_forge/undo_redo.dart';
 export 'LSP/lsp.dart';
 export 'code_forge/find_controller.dart';
+
+// Export platform-specific utilities
+export 'LSP/lsp_io_stub.dart' if (dart.library.io) 'LSP/lsp_io_impl.dart';

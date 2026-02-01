@@ -1,8 +1,10 @@
 import 'dart:async';
-import 'dart:io';
 
 import '../code_forge.dart';
 import 'rope.dart';
+
+// Conditional import for platform-specific code (File, etc.)
+import '../LSP/lsp_io_stub.dart' if (dart.library.io) '../LSP/lsp_io_impl.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -38,7 +40,7 @@ class CodeForgeController implements DeltaTextInputClient {
   static const _documentColorDebounce = Duration(milliseconds: 50);
   static const _documentHighlightDebounce = Duration(milliseconds: 300);
   final List<VoidCallback> _listeners = [];
-  final _isMobile = Platform.isAndroid || Platform.isIOS;
+  final _isMobile = !kIsWeb && (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS);
   Timer? _flushTimer, _semanticTokenTimer, _codeActionTimer, _syncTimer;
   Timer? _documentColorTimer;
   Timer? _foldRangesTimer;

@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
+
+// Conditional import for platform-specific code
+import 'lsp_io_stub.dart' if (dart.library.io) 'lsp_io_impl.dart';
 
 part 'lsp_socket.dart';
 part 'lsp_stdio.dart';
@@ -95,7 +97,7 @@ sealed class LspConfig {
     final response = await _sendRequest(
       method: 'initialize',
       params: {
-        'processId': pid,
+        'processId': getPlatformPid(),
         'rootUri': workspaceUri,
         'workspaceFolders': [
           {'uri': workspaceUri, 'name': 'workspace'},
